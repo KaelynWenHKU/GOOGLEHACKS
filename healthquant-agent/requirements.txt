@@ -1,0 +1,16 @@
+hmmlearn>=0.3.2
+yfinance>=0.2.40
+pymongo>=4.7.0
+pytrials>=0.4.0
+requests>=2.31.0
+pandas>=2.1.0
+numpy>=1.26.0
+scikit-learn>=1.4.0
+python-dotenv>=1.0.0
+rapidfuzz>=3.6.0
+streamlit>=1.32.0
+plotly>=5.19.0
+voyageai>=0.3.7
+google-cloud-aiplatform>=1.50.0
+google-adk>=0.1.0
+beautifulsoup4>=4.12.0
