@@ -1,0 +1,42 @@
+# macOS and editors
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*service-account*.json
+credentials*.json
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Local data, caches, models, and generated output
+data/cache/
+healthquant-agent/data/cache/
+outputs/
+*.parquet
+*.pkl
+*.joblib
+*.log
+
+# Keep the empty model directory in Git
+!healthquant-agent/hmm/models/.gitkeep
