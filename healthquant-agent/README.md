@@ -1,56 +1,48 @@
 # HealthQuant Agent
 
-HealthQuant is a Gemini-powered investment intelligence agent that detects market regime shifts in the healthcare and biotechnology sectors by combining clinical trial pipeline data with market microstructure signals in a single Hidden Markov Model feature space. Unlike existing regime-detection tools that operate on generic market indices, HealthQuant ingests live Phase 2/3 trial enrollment data and upcoming FDA PDUFA decision dates from ClinicalTrials.gov and SEC EDGAR, fusing them with XLV/IBB price signals into an 8-dimensional feature vector that drives a 3-state GaussianHMM classifying the market as *risk-on*, *neutral*, or *catalyst-driven fear*. When a user queries the agent, it calls three Google ADK tools — regime classification, MongoDB Atlas Vector Search for historical analogues, and upcoming catalyst retrieval — then uses Gemini to synthesise everything into a structured investment brief with concrete ETF positioning recommendations. The data layer runs entirely on MongoDB Atlas (document store, vector search, and persistent agent memory in one platform), with Voyage AI embeddings enabling millisecond retrieval of the most historically similar market periods from a decade of daily regime documents.
+HealthQuant is an early-stage investment-research agent for healthcare and biotechnology markets. It combines clinical-trial activity, FDA catalyst calendars, and ETF market signals in an eight-feature Hidden Markov Model (HMM), then uses Gemini and MongoDB Atlas Vector Search to produce a structured research brief.
 
-## Architecture
+> [!IMPORTANT]
+> This is a hackathon prototype under active development. The market-data module and project scaffolding are present, but several core functions are still marked `TODO` and raise `NotImplementedError`.
 
-```
-ClinicalTrials.gov API  ──┐
-SEC EDGAR (8-K filings) ──┤  data/ingestion/   →  MongoDB Atlas
-Yahoo Finance (yfinance) ──┘                       ├── regime_states (+ Vector Search)
-                                                   ├── trial_events
-                           hmm/                    ├── pdufa_events
-                           GaussianHMM (3 states)  └── company_ticker_map
-                                │
-                           agent/                  Voyage AI voyage-3-large
-                           Google ADK + Gemini     (1024-dim embeddings)
-                                │
-                           ui/dashboard.py
-                           Streamlit (4-panel demo)
-```
+## Components
 
-## Quick Start
+- `data/` — market, clinical-trial, and regulatory-data ingestion
+- `hmm/` — feature assembly, training, prediction, and walk-forward backtesting
+- `database/` — MongoDB persistence, schemas, and Atlas Vector Search
+- `agent/` — Gemini/Google ADK tools and investment-brief prompts
+- `ui/` — the Streamlit dashboard scaffold
+- `scripts/` — index setup, daily updates, and validation entry points
+
+See the repository's [project specification](../PROJECT_SPEC.md) for the architecture, data model, methodology, and implementation roadmap.
+
+## Setup
+
+Requirements: Python 3.11+, MongoDB Atlas, Google Cloud credentials for Gemini, and a Voyage AI API key.
 
 ```bash
-# 1. Clone and install
-git clone <repo-url> && cd healthquant-agent
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
 pip install -r requirements.txt
-
-# 2. Configure environment
 cp .env.example .env
-# Fill in MONGODB_URI, VOYAGE_API_KEY, GOOGLE_CLOUD_PROJECT
+```
 
-# 3. Set up Atlas indexes (run once)
+Fill in `.env` with your own credentials. Never commit `.env`, service-account files, cached datasets, or trained models.
+
+Once the remaining modules are implemented, the intended workflow is:
+
+```bash
 python scripts/setup_atlas_indexes.py
-
-# 4. Seed historical data 2015–2024 (takes ~2–4 hours)
 python database/seed_historical.py
-
-# 5. Train the HMM
-python -c "from hmm.train import run_walk_forward_training; from database.mongo_client import get_db; run_walk_forward_training(get_db())"
-
-# 6. Run the Streamlit dashboard
+python scripts/validate_backtest.py
 streamlit run ui/dashboard.py
 ```
 
-## Implementation Order
-
-Follow Section 18 of PROJECT_SPEC.md for the recommended build order.
-
 ## Disclaimer
 
-*This tool is for educational and research purposes only. It does not constitute financial advice. Past performance does not guarantee future results.*
+This project is for educational and research purposes only. It does not provide financial advice, and past performance does not guarantee future results.
 
 ## License
 
-MIT — see LICENSE file.
+Licensed under the [MIT License](LICENSE).
