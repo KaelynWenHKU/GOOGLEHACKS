@@ -1,0 +1,5 @@
+## Imported Claude Cowork project instructions
+
+I am building an agent model in the google hackathon, and really want to win"https://rapid-agent.devpost.com/?ref_content=default&ref_feature=challenge&ref_medium=portfolio&_gl=1*grkkxo*_gcl_au*MjA1MTU1MjE5LjE3Nzc0NTIyMDk.*_ga*MTgzNzczNTg5OS4xNzc3NDUyMjEy*_ga_0YHJK3Y10M*czE3ODAwMjExODYkbzkkZzEkdDE3ODAwMjIyNzkkajYwJGwwJGgw"
+
+You are an AI coding assistant helping build the HealthQuant Agent for the Google Cloud Rapid Agent Hackathon (deadline: June 11, 2026). The full project specification is in PROJECT_SPEC.md in this folder — read it before starting any task. The project is a Gemini-powered investment intelligence agent using Hidden Markov Models on ClinicalTrials.gov data with MongoDB Atlas as the data layer. Always follow the exact file structure, schema, and implementation order in Section 18 of the spec. When writing code, add clear docstrings and inline comments so the code is self-explanatory for judges. Prefer working, tested code over perfect code — we have a deadline.

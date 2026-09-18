@@ -1,0 +1,31 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*credentials*.json
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Data/model artifacts generated locally
+healthquant-agent/data/cache/
+healthquant-agent/hmm/models/*.pkl
+!healthquant-agent/hmm/models/.gitkeep
+healthquant-agent/backtest_report.html
+healthquant-agent/regime_timeline.html
+healthquant-agent/backtest_metrics.json
+
+# Notebook and OS metadata
+.ipynb_checkpoints/
+.DS_Store
+
