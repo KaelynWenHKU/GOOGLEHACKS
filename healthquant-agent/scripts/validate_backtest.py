@@ -58,16 +58,26 @@ def load_predictions_from_mongo(
         raise ValueError("end_year must not be earlier than start_year")
     cursor = db["regime_states"].find(
         {"date": {"$gte": start.to_pydatetime(), "$lte": end.to_pydatetime()}},
-        {"_id": 0, "date": 1, "predicted_regime": 1, "regime_label": 1},
+        {"_id": 0, "date": 1, "predicted_regime": 1, "train_end_date": 1},
     ).sort("date", 1)
     records = []
     for document in cursor:
-        label = document.get("predicted_regime") or document.get("regime_label")
-        if label:
-            records.append({"date": document["date"], "predicted_regime": label})
+        # Generic regime labels may have been fitted in-sample. Require the
+        # training cutoff written by the walk-forward trainer for every row.
+        label = document.get("predicted_regime")
+        prediction_date = pd.Timestamp(document["date"])
+        cutoff = pd.Timestamp(document.get("train_end_date"))
+        if not label or pd.isna(cutoff) or pd.isna(prediction_date):
+            raise ValueError("Every prediction requires predicted_regime and train_end_date provenance")
+        if cutoff >= prediction_date:
+            raise ValueError("train_end_date must precede the prediction date")
+        records.append({"date": prediction_date, "predicted_regime": label,
+                        "train_end_date": cutoff})
     if not records:
         raise ValueError(f"No regime predictions found for {start_year}–{end_year}")
-    predictions = pd.DataFrame(records).drop_duplicates("date", keep="last").set_index("date")
+    predictions = pd.DataFrame(records).set_index("date")
+    if predictions.index.has_duplicates:
+        raise ValueError("Duplicate prediction dates make the backtest ambiguous")
     predictions.index = pd.DatetimeIndex(predictions.index).tz_localize(None)
 
     # Include a lead-in so pct_change for the first prediction date uses the
@@ -86,10 +96,12 @@ def load_predictions_from_mongo(
         close = close.iloc[:, 0]
     close.index = pd.DatetimeIndex(close.index).tz_localize(None)
     predictions["xlv_price"] = close.reindex(predictions.index)
-    predictions["actual_xlv_ret_1d"] = close.pct_change().reindex(predictions.index)
-    predictions = predictions.dropna(subset=["xlv_price", "actual_xlv_ret_1d"])
-    if predictions.empty:
-        raise ValueError("No overlapping XLV prices and MongoDB predictions were found")
+    predictions["actual_xlv_ret_1d"] = close.pct_change(fill_method=None).reindex(predictions.index)
+    sessions = close.loc[predictions.index.min():predictions.index.max()].index
+    if not sessions.difference(predictions.index).empty:
+        raise ValueError("Missing predictions for XLV trading sessions inside the evaluation interval")
+    if predictions[["xlv_price", "actual_xlv_ret_1d"]].isna().any().any():
+        raise ValueError("Missing XLV prices or preceding close; refusing to silently drop sessions")
     return predictions.sort_index()
 
 

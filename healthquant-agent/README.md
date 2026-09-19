@@ -51,6 +51,16 @@ streamlit run ui/dashboard.py
 
 ## Quantitative Model Validation
 
+The validation loader requires `predicted_regime` and a `train_end_date` strictly
+before each prediction date. It rejects duplicate dates, missing predictions
+inside the downloaded trading-session interval, and missing price observations.
+Legacy documents containing only `regime_label` must be regenerated through the
+walk-forward trainer before evaluation. These checks establish recorded training
+cutoffs; they do not establish that historical clinical features used archived,
+point-in-time source snapshots. That data audit remains necessary before claiming
+a leakage-free historical result. The simulator assumes daily close-to-close
+exposure with a one-session signal lag, zero transaction costs, and zero cash yield.
+
 The model uses a three-state full-covariance Gaussian HMM with multiple random restarts. Every test month is predicted by a model and `StandardScaler` fitted only on the expanding history that ends before that month. Daily posterior probabilities are calculated from a sequence prefix ending on the prediction date, so HMM smoothing never sees later observations. The trading simulation also delays each close-derived signal by one session before changing the XLV allocation.
 
 `scripts/validate_backtest.py` writes `regime_timeline.html`, `backtest_report.html`, and `backtest_metrics.json`. The figures in `PROJECT_SPEC.md` are goals, not claimed results; only numbers reproduced by this command should be cited in the submission or demo.

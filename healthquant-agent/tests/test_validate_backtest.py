@@ -26,7 +26,7 @@ def test_load_predictions_aligns_prices_without_lookahead(monkeypatch) -> None:
     db = {
         "regime_states": Collection(
             [
-                {"date": day.to_pydatetime(), "predicted_regime": "risk-on"}
+                {"date": day.to_pydatetime(), "predicted_regime": "risk-on", "train_end_date": "2023-12-29"}
                 for day in dates
             ]
         )
@@ -57,3 +57,30 @@ def test_print_metrics_table_includes_disclaimer(capsys) -> None:
     output = capsys.readouterr().out
     assert "10-day directional hit" in output
     assert "Past performance does not guarantee future results" in output
+
+
+@pytest.mark.parametrize("extra", [
+    {},
+    {"train_end_date": "2024-01-02"},
+    {"train_end_date": "2024-01-03"},
+])
+def test_rejects_unverified_or_in_sample_predictions(extra, monkeypatch):
+    """Reject invalid provenance before accessing any market provider."""
+    document = {"date": datetime(2024, 1, 2), "predicted_regime": "risk-on", **extra}
+    def unexpected_download(*args, **kwargs):
+        pytest.fail("Invalid predictions must fail before downloading prices")
+    monkeypatch.setattr(validation.yf, "download", unexpected_download)
+    with pytest.raises(ValueError, match="train_end_date"):
+        validation.load_predictions_from_mongo({"regime_states": Collection([document])}, 2024, 2024)
+
+
+def test_rejects_missing_trading_session_predictions(monkeypatch):
+    documents = [
+        {"date": datetime(2024, 1, day), "predicted_regime": "risk-on",
+         "train_end_date": "2023-12-29"} for day in (2, 4)
+    ]
+    prices = pd.DataFrame({"Close": [100, 101, 102, 103]},
+                          index=pd.bdate_range("2024-01-01", periods=4))
+    monkeypatch.setattr(validation.yf, "download", lambda *args, **kwargs: prices)
+    with pytest.raises(ValueError, match="Missing predictions"):
+        validation.load_predictions_from_mongo({"regime_states": Collection(documents)}, 2024, 2024)
