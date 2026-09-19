@@ -64,13 +64,15 @@ def run_backtest(
     missing = required - set(predictions_df.columns)
     if missing:
         raise ValueError(f"predictions_df is missing columns: {sorted(missing)}")
-    if initial_capital <= 0:
-        raise ValueError("initial_capital must be positive")
+    if not np.isfinite(initial_capital) or initial_capital <= 0:
+        raise ValueError("initial_capital must be finite and positive")
     frame = predictions_df.copy()
     frame.index = pd.DatetimeIndex(frame.index).tz_localize(None)
     frame = frame.sort_index()
     if frame.empty or frame.index.has_duplicates:
         raise ValueError("predictions_df must be non-empty with unique dates")
+    if frame["predicted_regime"].isna().any():
+        raise ValueError("predicted_regime cannot contain missing regime labels")
     unknown = set(frame["predicted_regime"].dropna()) - set(REGIME_WEIGHTS)
     if unknown:
         raise ValueError(f"Unknown regime labels: {sorted(unknown)}")
@@ -100,8 +102,11 @@ def run_backtest(
     )
     if "xlv_price" in frame:
         output["xlv_price"] = frame["xlv_price"]
-    output["drawdown_strategy"] = output["strategy_value"] / output["strategy_value"].cummax() - 1.0
-    output["drawdown_buyhold"] = output["buyhold_value"] / output["buyhold_value"].cummax() - 1.0
+    # Initial equity is a high-water mark even if the first session loses money.
+    for portfolio in ("strategy", "buyhold"):
+        equity = output[f"{portfolio}_value"]
+        peak = equity.cummax().clip(lower=initial_capital)
+        output[f"drawdown_{portfolio}"] = equity / peak - 1.0
     output.attrs["initial_capital"] = float(initial_capital)
     return output
 
@@ -165,7 +170,8 @@ def compute_10d_hit_rate(backtest_df: pd.DataFrame) -> float:
             continue
         forward_return = float(np.prod(1.0 + returns[index + 1 : index + 11]) - 1.0)
         expected_positive = regime == "risk-on"
-        hits.append((forward_return > 0) == expected_positive)
+        # Zero is neither an upward nor a downward move.
+        hits.append(forward_return > 0 if expected_positive else forward_return < 0)
     return float(np.mean(hits)) if hits else float("nan")
 
 

@@ -2,6 +2,7 @@
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from hmm.backtest import (
     compute_10d_hit_rate,
@@ -60,3 +61,31 @@ def test_timeline_and_report_are_written_without_network(tmp_path) -> None:
     assert "Past performance does not guarantee future results" in report
     assert "Out-of-Sample" in report
 
+
+def test_drawdown_includes_initial_capital_on_first_loss() -> None:
+    """A loss before the first observed equity high must still count."""
+    predictions = sample_predictions(3)
+    predictions["actual_xlv_ret_1d"] = [-0.1, -0.1, 0.05]
+    result = run_backtest(predictions, initial_capital=500)
+    assert result["drawdown_buyhold"].iloc[0] == pytest.approx(-0.1)
+    assert compute_metrics(result)["max_drawdown_buyhold"] == pytest.approx(-0.19)
+
+
+@pytest.mark.parametrize("capital", [float("nan"), float("inf"), 0, -1])
+def test_invalid_capital_is_rejected(capital) -> None:
+    with pytest.raises(ValueError, match="capital"):
+        run_backtest(sample_predictions(), initial_capital=capital)
+
+
+def test_missing_regime_is_rejected_instead_of_becoming_cash() -> None:
+    predictions = sample_predictions()
+    predictions.iloc[2, predictions.columns.get_loc("predicted_regime")] = None
+    with pytest.raises(ValueError, match="regime"):
+        run_backtest(predictions)
+
+
+def test_flat_forward_return_is_not_a_correct_fear_prediction() -> None:
+    predictions = sample_predictions(12)
+    predictions["predicted_regime"] = "catalyst-fear"
+    predictions["actual_xlv_ret_1d"] = 0.0
+    assert compute_10d_hit_rate(run_backtest(predictions)) == 0.0
