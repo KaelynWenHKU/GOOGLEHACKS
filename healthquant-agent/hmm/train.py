@@ -102,6 +102,18 @@ def train_hmm(
             continue
         if not candidate.monitor_.converged:
             logger.warning("HMM restart %d did not converge after %d iterations", restart, candidate.monitor_.iter)
+            failures.append(f"restart {restart}: convergence monitor rejected fit")
+            continue
+        # hmmlearn also reports convergence when it exhausts n_iter, or when
+        # likelihood falls. Inspect the final improvement before accepting it.
+        history = list(candidate.monitor_.history)
+        if len(history) < 2 or not np.isfinite(history[-2:]).all():
+            failures.append(f"restart {restart}: insufficient finite convergence history")
+            continue
+        improvement = history[-1] - history[-2]
+        if improvement < -1e-6 or improvement >= config["tol"]:
+            failures.append(f"restart {restart}: final likelihood improvement {improvement} outside tolerance")
+            continue
         if np.isfinite(score) and score > best_score:
             best_model, best_score = candidate, score
 

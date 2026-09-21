@@ -4,11 +4,30 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+import pytest
 
 import hmm.train as train_module
 from hmm.features import FEATURE_NAMES
 from hmm.train import infer_state_labels, load_model, run_walk_forward_training, save_model, train_hmm
 from sklearn.preprocessing import StandardScaler
+
+
+@pytest.mark.parametrize("history", [[0, 1], [1, 0], [float("nan"), 0], [0]])
+def test_iteration_limit_or_falling_likelihood_is_not_convergence(monkeypatch, history):
+    """An apparently successful monitor must not admit an unfinished EM fit."""
+    class Candidate:
+        def __init__(self, **kwargs):
+            self.monitor_ = SimpleNamespace(converged=True, history=history, iter=200)
+
+        def fit(self, matrix):
+            return self
+
+        def score(self, matrix):
+            return 100.0
+
+    monkeypatch.setattr(train_module, "GaussianHMM", Candidate)
+    with pytest.raises(RuntimeError, match="All HMM restarts failed"):
+        train_hmm(synthetic_features(), n_restarts=2)
 
 
 def synthetic_features(rows: int = 120, seed: int = 7) -> np.ndarray:
@@ -85,4 +104,3 @@ def test_walk_forward_predictions_never_train_on_prediction_date(tmp_path, monke
     assert all(pd.Timestamp(end) < date for date, end in zip(predictions.index, predictions["train_end_date"]))
     assert predictions["actual_xlv_ret_1d"].notna().all()
     assert predictions["actual_xlv_return_10d"].notna().all()
-
