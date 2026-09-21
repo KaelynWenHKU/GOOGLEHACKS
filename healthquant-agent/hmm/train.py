@@ -331,13 +331,21 @@ def run_walk_forward_training(
                     "predicted_regime": label_map[state],
                     "state_probs": probabilities.tolist(),
                     "train_end_date": train_end,
+                    "feature_vector": test.loc[date].to_numpy(dtype=float).tolist(),
+                    "feature_names": FEATURE_NAMES,
+                    "state_label_map": {str(key): value for key, value in label_map.items()},
                 }
+                from hmm.predict import compute_forward_transition_probs
+                record["transition_probs_10d"] = compute_forward_transition_probs(
+                    model, probabilities, state_label_map=label_map)
                 if prices is not None:
                     # Return ending on ``date`` is paired with a one-session
                     # signal lag by backtest.run_backtest. The 10-day value is
                     # forward-looking only as an evaluation target.
                     record["actual_xlv_ret_1d"] = _return_ending_at(prices, date)
                     record["actual_xlv_return_10d"] = _return_after(prices, date, 10)
+                    if np.isfinite(record["actual_xlv_return_10d"]):
+                        record["return_observed_at"] = prices.index[prices.index.get_loc(date) + 10].to_pydatetime()
                 year_predictions.append(record)
                 if persist_predictions:
                     db["regime_states"].update_one(

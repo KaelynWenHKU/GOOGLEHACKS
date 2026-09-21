@@ -1,143 +1,114 @@
+"""Read-only evidence tools shared by Streamlit and the Gemini ADK agent.
+
+Failures expose actionable messages, never provider exceptions or credentials.
+Absent evidence remains absent rather than being treated as zero.
 """
-agent/tools.py
-===============
-Google ADK tool definitions for the HealthQuant agent.
-
-Three tools are registered with the ADK agent (Section 9):
-  1. get_current_regime       — HMM regime classification for today
-  2. find_historical_analogues — Atlas Vector Search for similar past periods
-  3. get_upcoming_catalysts    — PDUFA + Phase 3 events in the next N days
-
-Each function follows the ADK tool contract:
-  - Returns a JSON-serialisable dict
-  - All exceptions are caught and returned as {"error": str} so the
-    agent can gracefully handle data availability issues
-
-Usage:
-    from agent.tools import get_current_regime, find_historical_analogues, get_upcoming_catalysts
-    # Pass these callables to the ADK agent's tools list
-"""
-
+from datetime import datetime, timezone, timedelta
 import logging
-from datetime import datetime, timedelta
-from typing import Any
+import math
 
 from database.mongo_client import get_db
-from database.vector_search import find_analogues_from_feature_vector
-from hmm.predict import classify_current_regime, get_top_pdufa_events, get_active_phase3_count
+from hmm.features import FEATURE_NAMES
 
 logger = logging.getLogger(__name__)
 
 
-def get_current_regime() -> dict[str, Any]:
+def _failure(operation: str, exc: Exception, message: str) -> dict:
+    """Log only exception type; provider text may include credentials."""
+    logger.warning("%s failed (%s)", operation, type(exc).__name__)
+    return {"status": "unavailable", "error": message}
+
+
+def get_current_regime() -> dict:
+    """Read the latest persisted HMM prediction, preserving its as-of date.
+
+    This read does not retrain the model. The data pipeline must publish
+    regime_states first. Predictions older than four days are marked stale.
     """
-    Fetch today's feature vector, run it through the HMM, and return the
-    current healthcare market regime classification.
-
-    This is Tool 1 of the HealthQuant agent. It should always be called first
-    in the investment brief workflow to establish the current regime context.
-
-    Returns:
-        {
-            "regime_label": str,         # "risk-on" | "neutral" | "catalyst-fear"
-            "regime_id": int,            # 0 | 1 | 2
-            "state_probs": list[float],  # probability over all 3 states
-            "transition_10d": dict,      # 10-day forward transition probabilities
-            "feature_summary": dict,     # human-readable feature values with labels
-            "feature_vector": list[float], # raw 8-dim vector (for Tool 2 input)
-            "top_pdufa_events": list,    # next 3 PDUFA dates in the universe
-            "active_phase3_count": int,  # Phase 3 trials with results due in 30d
-            "date": str                  # ISO date string (today)
-        }
-        On error: {"error": str, "date": str}
-    """
-    # TODO: db = get_db()
-    # TODO: call classify_current_regime(db) from hmm/predict.py
-    # TODO: format feature_summary as {feature_name: formatted_value} for readability
-    # TODO: wrap in try/except and return {"error": str(e)} on failure
-    raise NotImplementedError
-
-
-def find_historical_analogues(
-    feature_vector: list[float],
-    top_k: int = 3,
-) -> dict[str, Any]:
-    """
-    Embed the current feature vector and search MongoDB Atlas Vector Search
-    for the most similar historical market periods.
-
-    This is Tool 2. Call it with the feature_vector returned by get_current_regime().
-
-    Args:
-        feature_vector: 8-dimensional list of raw feature values from Tool 1.
-        top_k: Number of analogues to return (default 3).
-
-    Returns:
-        {
-            "analogues": [
-                {
-                    "date": str,
-                    "regime_label": str,
-                    "similarity_score": float,  # cosine similarity in [0, 1]
-                    "description": str,         # brief_summary from the document
-                    "transition_probs_10d": dict,
-                    "key_events": list[str]     # notable events in that period
-                }
-            ]
-        }
-        On error: {"error": str, "analogues": []}
-    """
-    # TODO: db = get_db()
-    # TODO: call vector_search.find_analogues_from_feature_vector(db, feature_vector, ...)
-    # TODO: format each analogue: convert datetime to ISO string, rename score field
-    # TODO: wrap in try/except
-    raise NotImplementedError
+    try:
+        doc = get_db()["regime_states"].find_one(
+            {"date": {"$lte": datetime.now(timezone.utc).replace(tzinfo=None)}},
+            sort=[("date", -1)], projection={"_id": 0, "feature_embedding": 0})
+        if not doc:
+            return {"status": "unavailable", "error": "No stored HMM predictions. Run the training/data pipeline first."}
+        vector = doc.get("feature_vector", [])
+        if len(vector) != 8 or not all(math.isfinite(v) for v in vector):
+            raise ValueError("Missing features")
+        label = doc.get("regime_label", doc.get("predicted_regime"))
+        if label not in {"risk-on", "neutral", "catalyst-fear"}:
+            raise ValueError("Invalid label")
+        timestamp = doc["date"]
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        probabilities = doc.get("state_probs", [])
+        if len(probabilities) != 3 or not all(math.isfinite(p) and 0 <= p <= 1 for p in probabilities) or not math.isclose(sum(probabilities), 1, abs_tol=1e-6):
+            raise ValueError("Invalid state probabilities")
+        return {"status": "ok", "date": timestamp.isoformat(),
+                "stale": (datetime.now(timezone.utc) - timestamp).total_seconds() > 4 * 86400,
+                "regime_label": label, "state_probs": probabilities,
+                "state_label_map": {str(k): v for k, v in doc.get("state_label_map", {}).items()},
+                "feature_vector": vector, "feature_summary": dict(zip(FEATURE_NAMES, vector)),
+                "transition_10d": doc.get("transition_probs_10d", doc.get("transition_10d", {})),
+                "source": "MongoDB / persisted HMM prediction"}
+    except Exception as exc:
+        return _failure("Regime", exc, "Regime data unavailable. Check MongoDB configuration and stored HMM prediction fields.")
 
 
-def get_upcoming_catalysts(days: int = 30) -> dict[str, Any]:
-    """
-    Query MongoDB for PDUFA events and Phase 3 trial completions within
-    the next N calendar days, sorted by estimated market impact.
+def find_historical_analogues(feature_vector: list[float], top_k: int = 3, as_of: str = "") -> dict:
+    """Retrieve up to ten historical analogues for eight raw feature values."""
+    try:
+        from database.vector_search import find_analogues_from_feature_vector
+        if len(feature_vector) != 8 or not all(math.isfinite(x) for x in feature_vector) or not 1 <= top_k <= 10:
+            return {"status": "unavailable", "error": "Provide eight finite features and top_k from 1 to 10."}
+        cutoff = datetime.fromisoformat(as_of) if as_of else datetime.now(timezone.utc)
+        if cutoff.tzinfo:
+            cutoff = cutoff.astimezone(timezone.utc).replace(tzinfo=None)
+        matches = find_analogues_from_feature_vector(get_db(), feature_vector, FEATURE_NAMES,
+                                                    "unclassified", top_k, cutoff)
+        analogues = []
+        for doc in matches:
+            # Realized returns need a recorded availability date to be shown.
+            observed = doc.get("return_observed_at")
+            if observed and observed.tzinfo:
+                observed = observed.astimezone(timezone.utc).replace(tzinfo=None)
+            actual = doc.get("xlv_ret_10d_actual", doc.get("actual_xlv_return_10d"))
+            if not observed or observed > cutoff:
+                actual = None
+            analogues.append({"date": doc["date"].isoformat(), "regime_label": doc.get("regime_label"),
+                "similarity_score": doc.get("score"), "description": doc.get("brief_summary", ""),
+                "xlv_ret_10d_actual": actual, "key_events": doc.get("key_events", [])})
+        return {"status": "ok", "analogues": analogues, "source": "MongoDB Atlas Vector Search / Voyage"}
+    except Exception as exc:
+        return _failure("Analogues", exc, "Analogue search unavailable. Check Voyage credentials, stored embeddings and the Atlas vector index.")
 
-    This is Tool 3. Use it to identify near-term event risks that should
-    inform the Sector Positioning and Risk Flag sections of the brief.
 
-    Args:
-        days: Look-ahead window in calendar days (default 30).
+def get_upcoming_catalysts(days: int = 30) -> dict:
+    """Read stored PDUFA dates and active Phase 3 completions in a date window."""
+    if not 1 <= days <= 90:
+        return {"status": "unavailable", "error": "Choose a catalyst window between 1 and 90 days."}
+    try:
+        db = get_db()
+        today = datetime.now(timezone.utc).replace(tzinfo=None, hour=0, minute=0, second=0, microsecond=0)
+        window = {"$gte": today, "$lte": today + timedelta(days=days)}
+        pdufa = list(db["pdufa_events"].find({"pdufa_date": window}, {"_id": 0}).sort("pdufa_date", 1).limit(100))
+        trials = list(db["trial_events"].find({"phase": "PHASE3", "status": {"$in": ["RECRUITING", "ACTIVE_NOT_RECRUITING"]},
+                     "primary_completion_date": window}, {"_id": 0}).sort("primary_completion_date", 1).limit(100))
+        return {"status": "ok", "window_days": days, "source": "MongoDB / stored catalyst calendar",
+            "coverage_note": "Stored records only; completeness and source freshness are not verified. At most 100 events per type.",
+            "pdufa_events": [{"date": d["pdufa_date"].isoformat(), "company": d.get("company_name"),
+                "ticker": d.get("ticker"), "drug": d.get("drug_name"), "indication": d.get("indication"),
+                "review_type": d.get("review_type", "standard")} for d in pdufa],
+            "phase3_completions": [{"expected_date": d["primary_completion_date"].isoformat(),
+                "company": d.get("company_name"), "ticker": d.get("ticker"), "trial_id": d.get("nct_id"),
+                "condition": d.get("condition"), "enrollment": d.get("enrollment_count")} for d in trials]}
+    except Exception as exc:
+        return _failure("Catalysts", exc, "Catalyst calendar unavailable. Check MongoDB credentials and connectivity.")
 
-    Returns:
-        {
-            "pdufa_events": [
-                {
-                    "date": str,
-                    "company": str,
-                    "ticker": str,
-                    "drug": str,
-                    "indication": str,
-                    "review_type": str,           # "priority" | "standard"
-                    "historical_reaction": dict   # avg stock move for past events
-                }
-            ],
-            "phase3_completions": [
-                {
-                    "expected_date": str,
-                    "company": str,
-                    "ticker": str,
-                    "trial_id": str,
-                    "condition": str,
-                    "enrollment": int
-                }
-            ],
-            "total_catalyst_density_score": float,  # normalised 0–1 pressure score
-            "window_days": int
-        }
-        On error: {"error": str, "pdufa_events": [], "phase3_completions": []}
-    """
-    # TODO: db = get_db()
-    # TODO: query pdufa_events: pdufa_date in [now, now + days], sorted ascending
-    # TODO: query trial_events: PHASE3 + ACTIVE, primary_completion_date in window
-    # TODO: for each PDUFA event, look up historical_reaction from trial_events
-    # TODO: compute total_catalyst_density_score:
-    #   score = min(1.0, pdufa_count / 10) * 0.7 + min(1.0, phase3_count / 5) * 0.3
-    # TODO: wrap in try/except
-    raise NotImplementedError
+
+def collect_evidence() -> dict:
+    """Collect one snapshot; no Gemini request is made here."""
+    regime = get_current_regime()
+    analogues = (find_historical_analogues(regime["feature_vector"], as_of=regime["date"]) if regime.get("status") == "ok"
+                 else {"status": "unavailable", "error": "A valid regime feature vector is needed for analogue search."})
+    return {"regime": regime, "analogues": analogues, "catalysts": get_upcoming_catalysts(),
+            "loaded_at": datetime.now(timezone.utc).isoformat(), "mode": "Live data"}

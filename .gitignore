@@ -28,4 +28,6 @@ healthquant-agent/backtest_metrics.json
 # Notebook and OS metadata
 .ipynb_checkpoints/
 .DS_Store
-
+output/playwright/
+.playwright-cli/
+.streamlit/secrets.toml

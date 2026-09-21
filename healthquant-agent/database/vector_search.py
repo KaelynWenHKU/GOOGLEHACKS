@@ -16,6 +16,7 @@ See Section 19.4 of the spec for the complete query pattern.
 
 import logging
 import os
+import math
 from datetime import datetime
 from typing import Optional
 
@@ -46,9 +47,9 @@ def get_voyage_client() -> voyageai.Client:
     Raises:
         ValueError: If VOYAGE_API_KEY is not set.
     """
-    # TODO: check os.environ.get("VOYAGE_API_KEY") is set
-    # TODO: return voyageai.Client()
-    raise NotImplementedError
+    if not os.getenv("VOYAGE_API_KEY") or "<" in os.getenv("VOYAGE_API_KEY", ""):
+        raise ValueError("Configure VOYAGE_API_KEY for historical analogue search")
+    return voyageai.Client(timeout=15, max_retries=1)
 
 
 def embed_regime_document(text_description: str) -> list[float]:
@@ -65,10 +66,7 @@ def embed_regime_document(text_description: str) -> list[float]:
     Returns:
         List of 1024 floats (the Voyage AI embedding).
     """
-    # TODO: vo = get_voyage_client()
-    # TODO: result = vo.embed([text_description], model=VOYAGE_MODEL, input_type="document")
-    # TODO: return result.embeddings[0]
-    raise NotImplementedError
+    return embed_batch([text_description], "document")[0]
 
 
 def embed_query(query_text: str) -> list[float]:
@@ -84,10 +82,7 @@ def embed_query(query_text: str) -> list[float]:
     Returns:
         List of 1024 floats.
     """
-    # TODO: vo = get_voyage_client()
-    # TODO: result = vo.embed([query_text], model=VOYAGE_MODEL, input_type="query")
-    # TODO: return result.embeddings[0]
-    raise NotImplementedError
+    return embed_batch([query_text], "query")[0]
 
 
 def embed_batch(
@@ -107,10 +102,17 @@ def embed_batch(
     Returns:
         List of embedding lists, one per input text.
     """
-    # TODO: vo = get_voyage_client()
-    # TODO: result = vo.embed(texts, model=VOYAGE_MODEL, input_type=input_type)
-    # TODO: return result.embeddings
-    raise NotImplementedError
+    if input_type not in {"document", "query"}:
+        raise ValueError("input_type must be document or query")
+    if not texts:
+        return []
+    result = get_voyage_client().embed(texts, model=VOYAGE_MODEL, input_type=input_type)
+    if len(result.embeddings) != len(texts):
+        raise ValueError("Embedding count does not match input count")
+    for vector in result.embeddings:
+        if len(vector) != EMBEDDING_DIMS or not all(math.isfinite(x) for x in vector):
+            raise ValueError("Embedding must match the 1024-dimensional Atlas index")
+    return result.embeddings
 
 
 def build_regime_text(regime_doc: dict) -> str:
@@ -127,10 +129,14 @@ def build_regime_text(regime_doc: dict) -> str:
     Returns:
         Text string describing the regime state in natural language.
     """
-    # TODO: format feature values with descriptive labels
-    # TODO: include regime_label, date, upcoming PDUFA count, transition probabilities
-    # TODO: see spec Section 19.5 for the exact format to use
-    raise NotImplementedError
+    from hmm.features import FEATURE_NAMES
+    values = regime_doc["feature_vector"]
+    names = regime_doc.get("feature_names", FEATURE_NAMES)
+    if names != FEATURE_NAMES or len(values) != 8 or not all(math.isfinite(v) for v in values):
+        raise ValueError("Expected the canonical eight finite raw features")
+    features = ", ".join(f"{name}={value:.6g}" for name, value in zip(names, values))
+    return (f"Healthcare market regime: {regime_doc.get('regime_label', 'unclassified')}. "
+            f"Date: {regime_doc.get('date', 'unknown')}. Feature values: {features}.")
 
 
 def find_historical_analogues(
@@ -157,12 +163,23 @@ def find_historical_analogues(
             date, regime_label, brief_summary, transition_probs_10d,
             feature_vector, score (cosine similarity in [0, 1]).
     """
-    # TODO: build filter_clause = {"date": {"$lt": before_date}} if before_date else {}
-    # TODO: construct $vectorSearch pipeline (see spec Section 19.4)
-    #   numCandidates = top_k * NUM_CANDIDATES_MULTIPLIER
-    # TODO: add $project stage to exclude _id and feature_embedding (large field)
-    # TODO: return list(db.regime_states.aggregate(pipeline))
-    raise NotImplementedError
+    if before_date is None:
+        raise ValueError("before_date is required for historical search")
+    if not 1 <= top_k <= 10:
+        raise ValueError("top_k must be between 1 and 10")
+    if len(query_embedding) != EMBEDDING_DIMS or not all(math.isfinite(v) for v in query_embedding):
+        raise ValueError("Invalid query embedding")
+    pipeline = [{"$vectorSearch": {
+        "index": VECTOR_INDEX_NAME, "path": EMBEDDING_FIELD,
+        "queryVector": query_embedding, "numCandidates": top_k * NUM_CANDIDATES_MULTIPLIER,
+        "limit": top_k, "filter": {"date": {"$lt": before_date}},
+    }}, {"$project": {
+        "_id": 0, "date": 1, "regime_label": 1, "brief_summary": 1,
+        "actual_xlv_return_10d": 1, "xlv_ret_10d_actual": 1,
+        "return_observed_at": 1, "key_events": 1,
+        "score": {"$meta": "vectorSearchScore"},
+    }}]
+    return list(db["regime_states"].aggregate(pipeline, maxTimeMS=10000))
 
 
 def find_analogues_from_feature_vector(
@@ -191,8 +208,8 @@ def find_analogues_from_feature_vector(
     Returns:
         Same format as find_historical_analogues().
     """
-    # TODO: build a regime_doc dict with the feature_vector, feature_names, regime_label
-    # TODO: call build_regime_text() to construct the query text
-    # TODO: call embed_query() to get the query embedding
-    # TODO: call find_historical_analogues() and return results
-    raise NotImplementedError
+    if before_date is None or not 1 <= top_k <= 10:
+        raise ValueError("Provide a cutoff and top_k between 1 and 10")
+    description = build_regime_text({"feature_vector": raw_feature_vector,
+        "feature_names": feature_names, "regime_label": regime_label, "date": before_date.isoformat()})
+    return find_historical_analogues(db, embed_query(description), top_k, before_date)

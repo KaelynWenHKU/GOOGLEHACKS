@@ -16,7 +16,7 @@ from functools import lru_cache
 from typing import Optional
 
 from dotenv import load_dotenv
-from pymongo import MongoClient
+from pymongo import MongoClient, UpdateOne
 from pymongo.database import Database
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 
@@ -43,11 +43,17 @@ def get_client() -> MongoClient:
         ValueError: If MONGODB_URI is not set.
         ConnectionFailure: If Atlas is unreachable.
     """
-    # TODO: read MONGODB_URI from os.environ (raise ValueError if missing)
-    # TODO: instantiate MongoClient with serverSelectionTimeoutMS=5000
-    # TODO: call client.admin.command("ping") to verify connection
-    # TODO: log success and return client
-    raise NotImplementedError
+    uri = os.getenv("MONGODB_URI", "")
+    if not uri or "<" in uri:
+        raise ValueError("Configure MONGODB_URI in the local .env file")
+    client = MongoClient(uri, serverSelectionTimeoutMS=5000,
+                         connectTimeoutMS=5000, socketTimeoutMS=10000)
+    try:
+        client.admin.command("ping")
+    except Exception:
+        client.close()
+        raise ConnectionError("MongoDB is unavailable; check credentials and Atlas network access") from None
+    return client
 
 
 def get_db(db_name: Optional[str] = None) -> Database:
@@ -61,9 +67,7 @@ def get_db(db_name: Optional[str] = None) -> Database:
     Returns:
         pymongo Database object.
     """
-    # TODO: db_name = db_name or os.getenv("MONGODB_DB_NAME", DEFAULT_DB_NAME)
-    # TODO: return get_client()[db_name]
-    raise NotImplementedError
+    return get_client()[db_name or os.getenv("MONGODB_DB_NAME", DEFAULT_DB_NAME)]
 
 
 def upsert_document(
@@ -84,10 +88,11 @@ def upsert_document(
     Returns:
         The upserted document's _id as a string.
     """
-    # TODO: db = db or get_db()
-    # TODO: collection.update_one(filter_query, {"$set": document}, upsert=True)
-    # TODO: return str(result.upserted_id or collection.find_one(filter_query)["_id"])
-    raise NotImplementedError
+    database = get_db() if db is None else db
+    collection = database[collection_name]
+    payload = {key: value for key, value in document.items() if key != "_id"}
+    result = collection.update_one(filter_query, {"$set": payload}, upsert=True)
+    return str(result.upserted_id or collection.find_one(filter_query)["_id"])
 
 
 def bulk_upsert(
@@ -110,10 +115,17 @@ def bulk_upsert(
     Returns:
         Dict with counts: {inserted, modified, matched}.
     """
-    # TODO: build list of UpdateOne operations with filter from key_fields
-    # TODO: db[collection_name].bulk_write(operations, ordered=False)
-    # TODO: return {"inserted": result.upserted_count, "modified": result.modified_count, ...}
-    raise NotImplementedError
+    if not key_fields:
+        raise ValueError("key_fields cannot be empty")
+    if not documents:
+        return {"inserted": 0, "modified": 0, "matched": 0}
+    operations = [UpdateOne({key: doc[key] for key in key_fields},
+                           {"$set": {k: v for k, v in doc.items() if k != "_id"}},
+                           upsert=True) for doc in documents]
+    database = get_db() if db is None else db
+    result = database[collection_name].bulk_write(operations, ordered=False)
+    return {"inserted": result.upserted_count, "modified": result.modified_count,
+            "matched": result.matched_count}
 
 
 def health_check() -> dict:
@@ -123,8 +135,9 @@ def health_check() -> dict:
     Returns:
         Dict with keys: connected (bool), db_name (str), collection_counts (dict).
     """
-    # TODO: call get_client().admin.command("ping")
-    # TODO: list collections in the healthquant db
-    # TODO: count documents in each collection
-    # TODO: return status dict
-    raise NotImplementedError
+    try:
+        db = get_db()
+        return {"connected": True, "db_name": db.name, "collection_counts": {
+            name: db[name].estimated_document_count() for name in db.list_collection_names()}}
+    except Exception:
+        return {"connected": False, "error": "MongoDB unavailable; check connection configuration"}
