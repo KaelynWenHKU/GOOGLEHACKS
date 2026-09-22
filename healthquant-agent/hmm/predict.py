@@ -22,6 +22,24 @@ from hmm.features import build_feature_vector, FEATURE_NAMES
 logger = logging.getLogger(__name__)
 
 
+def _validated_state_map(mapping: dict[int, str] | None) -> dict[int, str]:
+    """Require a one-to-one mapping so malformed labels cannot overwrite states."""
+    if mapping is None:
+        return {0: "risk-on", 1: "neutral", 2: "catalyst-fear"}
+    if (set(mapping) != {0, 1, 2}
+            or set(mapping.values()) != {"risk-on", "neutral", "catalyst-fear"}):
+        raise ValueError("state_label_map must map states 0, 1, 2 to distinct canonical labels")
+    return dict(mapping)
+
+
+def _validate_distribution(values: np.ndarray, name: str) -> None:
+    """Reject invalid probabilities rather than normalizing corrupted evidence."""
+    if not np.isfinite(values).all() or np.any(values < 0) or np.any(values > 1):
+        raise ValueError(f"{name} must contain finite probabilities in [0, 1]")
+    if not np.allclose(values.sum(axis=-1), 1.0, atol=1e-6, rtol=0):
+        raise ValueError(f"{name} must sum to one")
+
+
 def classify_current_regime(db) -> dict:
     """
     Classify today's healthcare market regime using the latest trained HMM.
@@ -29,7 +47,7 @@ def classify_current_regime(db) -> dict:
     Steps:
       1. Load the latest model checkpoint from disk
       2. Build today's 8-dim feature vector from MongoDB + yfinance
-      3. Run the Viterbi algorithm to get state probabilities
+      3. Compute the posterior at the end of the observed sequence
       4. Compute 10-day forward transition probabilities via matrix power
       5. Return structured result dict
 
@@ -73,6 +91,7 @@ def classify_current_regime(db) -> dict:
         "regime_label": regime_label,
         "regime_id": regime_id,
         "state_probs": state_probs,
+        "state_label_map": {str(state): label for state, label in state_label_map.items()},
         "transition_10d": transition,
         "feature_vector": raw_today.tolist(),
         "feature_summary": dict(zip(FEATURE_NAMES, raw_today.tolist())),
@@ -106,10 +125,12 @@ def predict_proba_from_sequence(
         raise ValueError(f"feature_sequence must have shape (n, {len(FEATURE_NAMES)})")
     if not np.isfinite(sequence).all():
         raise ValueError("feature_sequence contains non-finite values")
-    mapping = state_label_map or {0: "risk-on", 1: "neutral", 2: "catalyst-fear"}
-    today_probs = np.asarray(model.predict_proba(sequence)[-1], dtype=float)
-    if today_probs.shape != (3,) or not np.isclose(today_probs.sum(), 1.0, atol=1e-6):
-        raise ValueError(f"Model returned invalid state probabilities: {today_probs}")
+    mapping = _validated_state_map(state_label_map)
+    posterior = np.asarray(model.predict_proba(sequence), dtype=float)
+    if posterior.shape != (len(sequence), 3):
+        raise ValueError("Model posterior must have shape (n, 3)")
+    _validate_distribution(posterior, "Model posterior")
+    today_probs = posterior[-1]
     regime_id = int(np.argmax(today_probs))
     return regime_id, mapping[regime_id], today_probs.tolist()
 
@@ -139,12 +160,12 @@ def compute_forward_transition_probs(
     probabilities = np.asarray(current_state_probs, dtype=float)
     if transmat.shape != (3, 3) or probabilities.shape != (3,):
         raise ValueError("Expected a 3-state transition matrix and probability vector")
-    if n_days < 0:
-        raise ValueError("n_days cannot be negative")
-    if not np.allclose(transmat.sum(axis=1), 1.0, atol=1e-6):
-        raise ValueError("Transition matrix rows must sum to one")
+    if isinstance(n_days, (bool, np.bool_)) or not isinstance(n_days, (int, np.integer)) or n_days < 0:
+        raise ValueError("n_days must be a non-negative integer")
+    _validate_distribution(transmat, "Transition matrix rows")
+    _validate_distribution(probabilities, "Current state probabilities")
+    mapping = _validated_state_map(state_label_map)
     forward = probabilities @ np.linalg.matrix_power(transmat, n_days)
-    mapping = state_label_map or {0: "risk-on", 1: "neutral", 2: "catalyst-fear"}
     by_label = {label: float(forward[state]) for state, label in mapping.items()}
     return {
         "to_risk_on": by_label["risk-on"],
