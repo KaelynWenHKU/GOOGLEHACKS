@@ -1,113 +1,77 @@
+"""Idempotent Atlas index setup; never silently replace an existing definition.
+
+Run from healthquant-agent/: python -m scripts.setup_atlas_indexes
+Search indexes are asynchronous; success requires READY and queryable.
 """
-scripts/setup_atlas_indexes.py
-================================
-One-time setup script to create all MongoDB Atlas indexes for HealthQuant.
-
-Run this BEFORE seed_historical.py.
-
-Creates:
-  1. Standard (non-vector) indexes via pymongo — fast, runs immediately
-  2. Atlas Vector Search index on regime_states.feature_embedding — takes 1–5 minutes
-
-Vector Search index config:
-  Collection: healthquant.regime_states
-  Field: feature_embedding
-  Dimensions: 1024 (Voyage AI voyage-3-large)
-  Similarity: cosine
-
-Usage:
-    python scripts/setup_atlas_indexes.py
-
-After running, verify in Atlas UI:
-  Your cluster → Atlas Search → regime_vector_index should show "Active"
-"""
-
-import os
 import time
-
-from dotenv import load_dotenv
-from pymongo import MongoClient
 from pymongo.operations import SearchIndexModel
 
-load_dotenv()
+
+VECTOR_DEFINITION = {"fields": [
+    {"type": "vector", "path": "feature_embedding", "numDimensions": 1024, "similarity": "cosine"},
+    {"type": "filter", "path": "date"},
+    {"type": "filter", "path": "regime_label"},
+]}
 
 
 def setup_standard_indexes(db) -> None:
-    """
-    Create all standard (non-vector) MongoDB indexes.
-
-    Args:
-        db: pymongo Database object (healthquant).
-    """
+    """Create identity and calendar indexes without deleting existing data."""
     from database.schema import setup_all_indexes
     setup_all_indexes(db)
 
 
-def setup_vector_search_index(collection) -> str:
-    """
-    Create the Atlas Vector Search index on regime_states.feature_embedding.
+def _ensure_index(collection, name, definition, kind, timeout_seconds, poll_seconds):
+    """Reuse matching definitions, reject conflicts, and bound readiness polling."""
+    if timeout_seconds < 0 or not 0 <= poll_seconds <= 30:
+        raise ValueError("Invalid polling limits")
+    existing = list(collection.list_search_indexes(name))
+    if existing:
+        item = existing[0]
+        if item.get("type", "search") != kind or item.get("latestDefinition") != definition:
+            raise ValueError(f"Existing {name} definition differs; review it manually")
+    else:
+        collection.create_search_index(model=SearchIndexModel(
+            name=name, definition=definition, type=kind))
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        items = list(collection.list_search_indexes(name))
+        if items:
+            item = items[0]
+            if item.get("status") == "FAILED":
+                raise RuntimeError(f"Atlas index {name} failed to build")
+            if item.get("status") == "READY" and item.get("queryable") is True:
+                return name
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"Atlas index {name} is not ready; rerun to check later")
+        time.sleep(poll_seconds)
 
-    Uses the pymongo SearchIndexModel API (requires pymongo >= 4.7.0).
-    The index takes 1–5 minutes to become queryable on Atlas free tier.
 
-    Args:
-        collection: pymongo Collection object for regime_states.
-
-    Returns:
-        Name of the created index.
-    """
-    # TODO: construct SearchIndexModel with:
-    #   type="vectorSearch"
-    #   name="regime_vector_index"
-    #   definition: numDimensions=1024, similarity="cosine", path="feature_embedding"
-    #   filter fields: date, regime_label
-    # TODO: collection.create_search_index(model=search_index_model)
-    # TODO: poll collection.list_search_indexes() until status == "READY"
-    # TODO: return index name
-    raise NotImplementedError
+def setup_vector_search_index(collection, timeout_seconds=300, poll_seconds=5) -> str:
+    """Create/reuse a 1024-dimensional Voyage index with historical date filters."""
+    return _ensure_index(collection, "regime_vector_index", VECTOR_DEFINITION,
+                         "vectorSearch", timeout_seconds, poll_seconds)
 
 
-def setup_text_search_index(collection) -> str:
-    """
-    Create an Atlas Search (Lucene) full-text index on trial_events.
-
-    Enables free-text search on condition, drug_name, and company_name fields.
-    Used by the agent when looking up trials by disease area.
-
-    Args:
-        collection: pymongo Collection object for trial_events.
-
-    Returns:
-        Name of the created index.
-    """
-    # TODO: create Atlas Search index with dynamic mapping on trial_events
-    # TODO: index name: "trial_text_index"
-    raise NotImplementedError
+def setup_text_search_index(collection, timeout_seconds=300, poll_seconds=5) -> str:
+    """Create/reuse the trial text search index."""
+    return _ensure_index(collection, "trial_text_index", {"mappings": {"dynamic": True}},
+                         "search", timeout_seconds, poll_seconds)
 
 
 def main() -> None:
-    """Run the complete Atlas index setup."""
+    """Configure only the database selected by local environment settings."""
     from database.mongo_client import get_db
-
-    print("Setting up MongoDB Atlas indexes for HealthQuant...")
-    db = get_db()
-
-    print("\n[1/3] Creating standard indexes...")
-    setup_standard_indexes(db)
-    print("      ✓ Standard indexes created")
-
-    print("\n[2/3] Creating Atlas Vector Search index on regime_states...")
-    print("      (This takes 1–5 minutes on Atlas free tier)")
-    # TODO: index_name = setup_vector_search_index(db["regime_states"])
-    # TODO: print(f"      ✓ Vector Search index '{index_name}' is ACTIVE")
-    print("      [TODO: implement setup_vector_search_index]")
-
-    print("\n[3/3] Creating Atlas Search (full-text) index on trial_events...")
-    # TODO: index_name = setup_text_search_index(db["trial_events"])
-    # TODO: print(f"      ✓ Text index '{index_name}' is ACTIVE")
-    print("      [TODO: implement setup_text_search_index]")
-
-    print("\n✅ Atlas index setup complete. You can now run seed_historical.py.")
+    try:
+        db = get_db()
+        setup_standard_indexes(db)
+        for setup, name in [(setup_vector_search_index, "regime_states"),
+                            (setup_text_search_index, "trial_events")]:
+            print(f"Waiting for {name} search index...", flush=True)
+            print(f"Ready: {setup(db[name])}", flush=True)
+    except Exception as exc:
+        # Provider errors may include credentials or full topology details.
+        print(f"Index setup incomplete ({type(exc).__name__}); inspect Atlas status/configuration.")
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":

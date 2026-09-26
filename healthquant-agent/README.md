@@ -40,6 +40,35 @@ The [competition rules](https://rapid-agent.devpost.com/rules) offered a $100 Go
 
 ## Status and verification
 
+### Bootstrap current live data
+
+From `healthquant-agent/`, with the virtual environment active:
+
+```bash
+python -m scripts.setup_atlas_indexes
+python -m scripts.import_current_trials                 # fetch/validate only
+python -m scripts.import_current_trials --write         # explicitly write to Atlas
+```
+
+Index setup creates standard identity/calendar indexes plus the 1024-dimensional
+`regime_vector_index` and `trial_text_index`. It reuses matching search definitions,
+rejects conflicts without replacing them, and waits for READY/queryable status.
+If a build times out, check Atlas and rerun; do not delete data to resolve it.
+
+The initial import is limited to **100 recently updated active Phase 3 records**
+from ClinicalTrials.gov. This is partial registry coverage, not a public-company
+universe. `--page-size` and `--max-pages` control the bounded fetch. Completed
+imports record the source, fetch time, count and truncation in `ingestion_runs`.
+Reruns upsert by NCT ID, preserving independent ticker/outcome annotations.
+Month/year-only dates retain their raw precision and are not placed on a specific
+calendar day. Missing enrollment remains null. Current revisions have a current
+`known_as_of`; old first-posted dates do not make those revisions historical evidence.
+
+This importer does **not** populate PDUFA events, company mappings or historical
+regime states; it does not train a model, generate returns or run paid embeddings.
+The older ticker-specific/historical ingestion scaffold is still incomplete.
+An empty regime collection therefore correctly remains unavailable in Live mode.
+
 Implemented: four-panel UI, explicit sample/live modes, three read-only evidence tools, ADK/Gemini runner, MongoDB connection helpers, Voyage embedding and Atlas search wrappers, HMM training and backtest modules.
 
 Still required for a real end-to-end run: authorized credentials, populated and audited historical data, a trained model's persisted predictions, and an Atlas vector index/embeddings. The ingestion, historical-seeding and automatic-update scripts elsewhere in the scaffold remain incomplete. There is no hosted deployment or verified live Gemini response yet. The repository does not claim a profitable or fully validated historical strategy.

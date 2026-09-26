@@ -12,7 +12,9 @@ Results are cached to MongoDB to avoid redundant API calls.
 
 import time
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timezone
+import re
+import uuid
 from typing import Optional
 
 import requests
@@ -90,11 +92,102 @@ def parse_study(raw_study: dict) -> dict:
         Dict matching the trial_events collection schema (Section 5.2 of spec).
         stock_reaction and outcome fields are left null — filled in post-event.
     """
-    # TODO: extract NCTId, Phase, OverallStatus, PrimaryCompletionDate
-    # TODO: extract LeadSponsorName, Condition, EnrollmentCount
-    # TODO: parse dates from API string format to datetime objects
-    # TODO: set is_historical=False for records fetched today
-    raise NotImplementedError
+    protocol = raw_study.get("protocolSection", raw_study)
+    nct_id = protocol.get("identificationModule", {}).get("nctId", "")
+    if not re.fullmatch(r"NCT\d{8}", nct_id):
+        raise ValueError("Study has an invalid NCT identifier")
+    status = protocol.get("statusModule", {})
+    design = protocol.get("designModule", {})
+    phases = design.get("phases", [])
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    doc = {
+        "nct_id": nct_id,
+        "company_name": protocol.get("sponsorCollaboratorsModule", {}).get("leadSponsor", {}).get("name"),
+        "phase": next((p for p in ["PHASE4", "PHASE3", "PHASE2", "PHASE1"] if p in phases), None),
+        "phases": phases,
+        "status": status.get("overallStatus"),
+        "condition": "; ".join(protocol.get("conditionsModule", {}).get("conditions", [])),
+        "enrollment_count": design.get("enrollmentInfo", {}).get("count"),
+        "enrollment_type": design.get("enrollmentInfo", {}).get("type"),
+        "data_source": "clinicaltrials_gov",
+        "source_url": f"https://clinicaltrials.gov/study/{nct_id}",
+        "known_as_of": now, "last_updated": now, "is_historical": False,
+        "universe_scope": "current_registry_snapshot_not_ticker_screened",
+    }
+    for field, source in [("primary_completion_date", "primaryCompletionDateStruct"),
+                          ("start_date", "startDateStruct")]:
+        value = status.get(source, {})
+        raw = value.get("date")
+        exact, precision = _parse_registry_date(raw)
+        doc.update({field: exact, field + "_raw": raw,
+                    field + "_precision": precision, field + "_type": value.get("type")})
+    # Source publication dates are audit metadata only. They must not be used
+    # to backdate availability of the current, possibly revised record.
+    doc["source_first_posted_raw"] = status.get("studyFirstPostDateStruct", {}).get("date")
+    doc["source_last_update_raw"] = status.get("lastUpdatePostDateStruct", {}).get("date")
+    return doc
+
+
+def _parse_registry_date(raw):
+    """Preserve missing/month/year precision without inventing calendar days."""
+    if not raw:
+        return None, "missing"
+    try:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+            return datetime.strptime(raw, "%Y-%m-%d"), "day"
+        if re.fullmatch(r"\d{4}-\d{2}", raw):
+            datetime.strptime(raw, "%Y-%m")
+            return None, "month"
+        if re.fullmatch(r"\d{4}", raw):
+            datetime.strptime(raw, "%Y")
+            return None, "year"
+    except ValueError:
+        pass
+    raise ValueError("Invalid registry date")
+
+
+def fetch_current_snapshot(page_size=100, max_pages=1, sleep_seconds=0.5) -> dict:
+    """Fetch a bounded current active Phase 3 snapshot with explicit coverage.
+
+    This is not an archived point-in-time dataset, and it is not restricted to
+    public companies. Truncation is reported, never silently called complete.
+    """
+    if not 1 <= page_size <= 1000 or not 1 <= max_pages <= 10 or not 0 <= sleep_seconds <= 30:
+        raise ValueError("Invalid fetch limits")
+    params = {"format": "json", "pageSize": page_size, "countTotal": "true",
+              "filter.overallStatus": "RECRUITING,ACTIVE_NOT_RECRUITING",
+              "filter.advanced": "AREA[Phase]PHASE3", "sort": "LastUpdatePostDate:desc"}
+    documents = {}
+    seen_tokens = set()
+    next_token = None
+    total = None
+    for page in range(max_pages):
+        response = requests.get(BASE_URL, params=params.copy(), timeout=(10, 30))
+        response.raise_for_status()
+        payload = response.json()
+        if "studies" not in payload or not isinstance(payload["studies"], list):
+            raise ValueError("Unexpected ClinicalTrials.gov response")
+        if page == 0:
+            total = payload.get("totalCount")
+        for raw in payload["studies"]:
+            doc = parse_study(raw)
+            if "PHASE3" not in doc["phases"] or doc["status"] not in {"RECRUITING", "ACTIVE_NOT_RECRUITING"}:
+                raise ValueError("API returned a study outside the requested scope")
+            documents[doc["nct_id"]] = doc
+        next_token = payload.get("nextPageToken")
+        if not next_token:
+            break
+        if next_token in seen_tokens:
+            raise ValueError("Repeated pagination token")
+        seen_tokens.add(next_token)
+        params["pageToken"] = next_token
+        if page + 1 < max_pages:
+            time.sleep(sleep_seconds)
+    return {"run_id": str(uuid.uuid4()), "documents": list(documents.values()), "coverage": {
+        "source": BASE_URL, "fetched_at": datetime.now(timezone.utc).replace(tzinfo=None),
+        "total_available": total, "fetched": len(documents), "truncated": bool(next_token),
+        "scope": "current active Phase 3, newest registry updates first; not ticker-screened",
+        "historical_point_in_time": False}}
 
 
 def fetch_completed_trials(

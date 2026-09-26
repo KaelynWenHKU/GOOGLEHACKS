@@ -112,21 +112,22 @@ def setup_all_indexes(db: Database) -> None:
         db: pymongo Database object (healthquant).
     """
     print("Creating indexes for regime_states...")
-    # TODO: db.regime_states.create_index([("date", DESCENDING)], unique=True)
+    db[COLLECTION_REGIME_STATES].create_index([("date", DESCENDING)], unique=True)
 
     print("Creating indexes for trial_events...")
-    # TODO: db.trial_events.create_index([("primary_completion_date", ASCENDING)])
-    # TODO: db.trial_events.create_index([("ticker", ASCENDING)])
-    # TODO: db.trial_events.create_index([("phase", ASCENDING), ("status", ASCENDING)])
-    # TODO: db.trial_events.create_index([("nct_id", ASCENDING)], unique=True)
+    trials = db[COLLECTION_TRIAL_EVENTS]
+    for keys in [[("primary_completion_date", ASCENDING)], [("ticker", ASCENDING)],
+                 [("phase", ASCENDING), ("status", ASCENDING)]]:
+        trials.create_index(keys)
+    trials.create_index([("nct_id", ASCENDING)], unique=True)
 
     print("Creating indexes for pdufa_events...")
-    # TODO: db.pdufa_events.create_index([("pdufa_date", ASCENDING)])
-    # TODO: db.pdufa_events.create_index([("ticker", ASCENDING)])
+    db[COLLECTION_PDUFA_EVENTS].create_index([("pdufa_date", ASCENDING)])
+    db[COLLECTION_PDUFA_EVENTS].create_index([("ticker", ASCENDING)])
 
     print("Creating indexes for company_ticker_map...")
-    # TODO: db.company_ticker_map.create_index([("ticker", ASCENDING)], unique=True)
-    # TODO: db.company_ticker_map.create_index([("canonical_name", ASCENDING)])
+    db[COLLECTION_TICKER_MAP].create_index([("ticker", ASCENDING)], unique=True)
+    db[COLLECTION_TICKER_MAP].create_index([("canonical_name", ASCENDING)])
 
     print("All standard indexes created.")
 
@@ -146,5 +147,4 @@ def validate_document(document: dict, schema: dict) -> list[str]:
         List of field names that are present in the schema but missing from
         the document. Empty list means validation passed.
     """
-    # TODO: return [field for field in schema if field not in document]
-    raise NotImplementedError
+    return [field for field in schema if field not in document]
