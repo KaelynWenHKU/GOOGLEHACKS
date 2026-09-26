@@ -104,3 +104,37 @@ def test_walk_forward_predictions_never_train_on_prediction_date(tmp_path, monke
     assert all(pd.Timestamp(end) < date for date, end in zip(predictions.index, predictions["train_end_date"]))
     assert predictions["actual_xlv_ret_1d"].notna().all()
     assert predictions["actual_xlv_return_10d"].notna().all()
+
+
+@pytest.mark.parametrize("source", ["features", "prices"])
+@pytest.mark.parametrize("defect", ["duplicate", "missing", "intraday"])
+def test_walk_forward_rejects_ambiguous_dates_before_fitting(monkeypatch, source, defect):
+    dates = pd.bdate_range("2023-09-01", "2024-01-19")
+    frame = pd.DataFrame(synthetic_features(len(dates)), index=dates, columns=FEATURE_NAMES)
+    prices = pd.Series(100.0, index=dates)
+    bad_dates = dates.to_list()
+    bad_dates[1] = {"duplicate": dates[0], "missing": pd.NaT,
+                    "intraday": dates[1] + pd.Timedelta(hours=12)}[defect]
+    if source == "features":
+        frame.index = pd.DatetimeIndex(bad_dates)
+    else:
+        prices.index = pd.DatetimeIndex(bad_dates)
+    monkeypatch.setattr(train_module, "train_hmm", lambda *a, **k: pytest.fail("fit started before validation"))
+    with pytest.raises(ValueError, match="dates must"):
+        run_walk_forward_training({}, "2023-09-01", [2024], frame, prices)
+
+
+@pytest.mark.parametrize("bad_price", [0.0, -1.0, np.nan, np.inf])
+def test_walk_forward_rejects_invalid_closes_before_fitting(monkeypatch, bad_price):
+    dates = pd.bdate_range("2023-09-01", "2024-01-19")
+    frame = pd.DataFrame(synthetic_features(len(dates)), index=dates, columns=FEATURE_NAMES)
+    prices = pd.Series(100.0, index=dates)
+    prices.iloc[-1] = bad_price
+    monkeypatch.setattr(train_module, "train_hmm", lambda *a, **k: pytest.fail("fit started before validation"))
+    with pytest.raises(ValueError, match="strictly positive"):
+        run_walk_forward_training({}, "2023-09-01", [2024], frame, prices)
+
+
+def test_walk_forward_rejects_empty_years():
+    with pytest.raises(ValueError, match="must not be empty"):
+        run_walk_forward_training({}, test_years=[])

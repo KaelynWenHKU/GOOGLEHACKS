@@ -277,11 +277,16 @@ def run_walk_forward_training(
         This function may take 30–60 minutes on full 2015–2024 data.
         Progress is logged every month. Results are also saved to MongoDB.
     """
-    years = test_years or [2020, 2021, 2022, 2023, 2024]
+    years = [2020, 2021, 2022, 2023, 2024] if test_years is None else test_years
+    if not years:
+        raise ValueError("test_years must not be empty")
     if sorted(set(years)) != years:
         raise ValueError("test_years must be unique and sorted ascending")
     frame = feature_frame.copy() if feature_frame is not None else _load_feature_frame(db, start_date, years[-1])
     frame.index = pd.DatetimeIndex(frame.index).tz_localize(None)
+    _validate_daily_index(frame.index, "feature_frame")
+    if not frame.columns.is_unique:
+        raise ValueError("feature_frame columns must be unique")
     frame = frame.sort_index()
     missing = [name for name in FEATURE_NAMES if name not in frame.columns]
     if missing:
@@ -292,8 +297,12 @@ def run_walk_forward_training(
 
     prices = None
     if xlv_prices is not None:
-        prices = xlv_prices.copy().sort_index()
+        prices = xlv_prices.copy()
         prices.index = pd.DatetimeIndex(prices.index).tz_localize(None)
+        _validate_daily_index(prices.index, "xlv_prices")
+        prices = prices.sort_index().astype(float)
+        if prices.empty or not np.isfinite(prices.to_numpy()).all() or (prices <= 0).any():
+            raise ValueError("xlv_prices must contain finite, strictly positive closes")
     results: list[dict] = []
 
     for year in years:
@@ -365,6 +374,18 @@ def run_walk_forward_training(
             }
         )
     return results
+
+
+def _validate_daily_index(index: pd.DatetimeIndex, name: str) -> None:
+    """Fail before fitting or writing checkpoints if daily row identity is ambiguous.
+
+    Inputs represent session dates, not intraday timestamps. This does not
+    verify exchange-calendar completeness or point-in-time source provenance.
+    """
+    if index.hasnans or not index.is_unique:
+        raise ValueError(f"{name} dates must be unique and non-missing")
+    if not index.equals(index.normalize()):
+        raise ValueError(f"{name} dates must be midnight session dates, not intraday timestamps")
 
 
 def _atomic_pickle_dump(payload: dict, destination: Path) -> None:
