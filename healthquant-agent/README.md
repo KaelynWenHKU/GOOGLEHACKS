@@ -69,6 +69,13 @@ regime states; it does not train a model, generate returns or run paid embedding
 The older ticker-specific/historical ingestion scaffold is still incomplete.
 An empty regime collection therefore correctly remains unavailable in Live mode.
 
+Live bootstrap verified September 26, 2026: 100 current trial records were written
+and counted in Atlas; both search indexes reported READY and queryable. The live
+catalyst tool returned one exact-date Phase 3 completion in its next-30-day window.
+This is a dated partial-snapshot check, not a comprehensive calendar. PDUFA and
+regime collections remained empty. Atlas SRV connections use the certifi trusted
+CA bundle with certificate verification enabled; credentials remain local.
+
 Implemented: four-panel UI, explicit sample/live modes, three read-only evidence tools, ADK/Gemini runner, MongoDB connection helpers, Voyage embedding and Atlas search wrappers, HMM training and backtest modules.
 
 Still required for a real end-to-end run: authorized credentials, populated and audited historical data, a trained model's persisted predictions, and an Atlas vector index/embeddings. The ingestion, historical-seeding and automatic-update scripts elsewhere in the scaffold remain incomplete. There is no hosted deployment or verified live Gemini response yet. The repository does not claim a profitable or fully validated historical strategy.

@@ -22,6 +22,20 @@ def test_mongo_failure_is_sanitized_and_client_closed(monkeypatch):
     mongo_client.get_client.cache_clear()
 
 
+def test_atlas_uses_trusted_ca_bundle_without_disabling_verification(monkeypatch):
+    mongo_client.get_client.cache_clear()
+    factory = MagicMock()
+    monkeypatch.setenv("MONGODB_URI", "mongodb+srv://example.invalid")
+    monkeypatch.setattr(mongo_client, "MongoClient", factory)
+    mongo_client.get_client()
+    options = factory.call_args.kwargs
+    assert options["tlsCAFile"] == mongo_client.certifi.where()
+    assert not options.get("tlsAllowInvalidCertificates", False)
+    assert not options.get("tlsInsecure", False)
+    factory.return_value.admin.command.assert_called_once_with("ping")
+    mongo_client.get_client.cache_clear()
+
+
 def test_embeddings_have_query_document_types_and_dimensions(monkeypatch):
     client = MagicMock()
     client.embed.return_value = SimpleNamespace(embeddings=[[0.1] * 1024])

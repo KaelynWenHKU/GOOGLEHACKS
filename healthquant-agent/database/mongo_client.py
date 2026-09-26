@@ -14,13 +14,15 @@ import logging
 import os
 from functools import lru_cache
 from typing import Optional
+from pathlib import Path
 
+import certifi
 from dotenv import load_dotenv
 from pymongo import MongoClient, UpdateOne
 from pymongo.database import Database
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 logger = logging.getLogger(__name__)
 
 # Default database name — overridden by MONGODB_DB_NAME env var
@@ -46,7 +48,11 @@ def get_client() -> MongoClient:
     uri = os.getenv("MONGODB_URI", "")
     if not uri or "<" in uri:
         raise ValueError("Configure MONGODB_URI in the local .env file")
-    client = MongoClient(uri, serverSelectionTimeoutMS=5000,
+    # Atlas uses public TLS certificates. Supply a trusted CA bundle on Python
+    # installations without a configured system trust store; never disable TLS
+    # verification. Non-SRV/private deployments keep their URI configuration.
+    tls_options = {"tlsCAFile": certifi.where()} if uri.startswith("mongodb+srv://") else {}
+    client = MongoClient(uri, **tls_options, serverSelectionTimeoutMS=5000,
                          connectTimeoutMS=5000, socketTimeoutMS=10000)
     try:
         client.admin.command("ping")
