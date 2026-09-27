@@ -46,7 +46,7 @@ def test_point_in_time_counts_include_date_and_knowledge_guards() -> None:
     assert "$or" in trial_query
 
 
-def test_average_enrollment_uses_as_of_query_and_fallback() -> None:
+def test_average_enrollment_uses_as_of_query_and_rejects_missing_evidence() -> None:
     db = make_db()
     assert get_avg_enrollment_active(db, "2024-01-15") == 200.0
     query = db["trial_events"].find.call_args.args[0]
@@ -54,7 +54,40 @@ def test_average_enrollment_uses_as_of_query_and_fallback() -> None:
     assert "$and" in query and "$or" in query
 
     db["trial_events"].find.return_value = []
-    assert get_avg_enrollment_active(db, "2024-01-15") == 5000.0
+    with pytest.raises(ValueError, match="No eligible enrollment"):
+        get_avg_enrollment_active(db, "2024-01-15")
+
+
+@pytest.mark.parametrize("record,expected", [
+    ({"known_as_of": "2024-02-01", "first_posted_date": "2020-01-01"}, False),
+    ({"known_as_of": "2024-02-01", "announced_at": "2020-01-01"}, False),
+    ({"known_as_of": "2024-01-01"}, True),
+    ({"known_as_of": "2024-01-15"}, True),
+    ({"announced_at": "2024-02-01", "first_posted_date": "2020-01-01"}, False),
+    ({"announced_at": "2024-01-01"}, True),
+    ({"first_posted_date": "2024-01-01"}, True),
+    ({}, False),
+    ({"known_as_of": None, "first_posted_date": "2020-01-01"}, False),
+])
+def test_knowledge_timestamp_precedence(record, expected):
+    """Evaluate the emitted timestamp query against revisions with old metadata."""
+    from hmm.features import _point_in_time_filter
+    cutoff = pd.Timestamp("2024-01-15")
+    record = {key: pd.Timestamp(value) if value else None for key, value in record.items()}
+    query = _point_in_time_filter(cutoff)
+    def matches_branch(branch):
+        for field, condition in branch.items():
+            if "$exists" in condition:
+                if (field in record) != condition["$exists"]:
+                    return False
+            elif "$lte" in condition:
+                value = record.get(field)
+                if value is None or value > condition["$lte"]:
+                    return False
+            else:
+                pytest.fail("Unexpected knowledge predicate")
+        return True
+    assert any(matches_branch(branch) for branch in query["$or"]) is expected
 
 
 def test_build_feature_vector_preserves_canonical_order() -> None:
@@ -111,4 +144,3 @@ def test_feature_matrix_requires_chronological_dates_and_scaler_reuse() -> None:
 def test_non_finite_features_are_rejected() -> None:
     with pytest.raises(ValueError, match="finite"):
         standardise_features(np.full((2, 8), np.nan))
-

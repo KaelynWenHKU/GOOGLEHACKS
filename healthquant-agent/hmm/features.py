@@ -189,8 +189,11 @@ def get_avg_enrollment_active(db, target_date: Optional[str] = None) -> float:
         db: pymongo Database object.
 
     Returns:
-        Mean enrollment count as a float. Returns 5000.0 as a neutral fallback
-        if no active trials are found in the database.
+        Mean enrollment count as a float.
+
+    Raises:
+        ValueError: No eligible enrollment observations exist. Missing evidence
+                    must not become an invented neutral feature value.
     """
     query: dict = {
         "phase": {"$in": ["PHASE2", "PHASE3"]},
@@ -223,7 +226,9 @@ def get_avg_enrollment_active(db, target_date: Optional[str] = None) -> float:
         value = document.get("enrollment_count")
         if isinstance(value, (int, float)) and np.isfinite(value) and value >= 0:
             enrollments.append(float(value))
-    return float(np.mean(enrollments)) if enrollments else 5000.0
+    if not enrollments:
+        raise ValueError("No eligible enrollment observations; cannot construct the clinical feature")
+    return float(np.mean(enrollments))
 
 
 def standardise_features(
@@ -268,22 +273,24 @@ def _parse_target_date(target_date: str) -> datetime:
 
 
 def _point_in_time_filter(target_dt: datetime) -> dict:
-    """Return a permissive knowledge-date guard for legacy and new records.
+    """Use the most authoritative available knowledge timestamp, failing closed.
 
-    New ingestion should populate ``known_as_of`` (or source-specific
-    ``announced_at``/``first_posted_date``). Records with none of these fields
-    are retained for backwards compatibility, but are explicitly less robust
-    for historical no-lookahead validation.
+    A newer known_as_of cannot be bypassed by an older announcement/publication
+    date. Missing or null provenance is not evidence of historical availability.
+    Source-specific dates are accepted only when higher-priority fields are
+    absent; callers must still supply immutable, audited historical revisions.
     """
     return {
         "$or": [
             {"known_as_of": {"$lte": target_dt}},
-            {"announced_at": {"$lte": target_dt}},
-            {"first_posted_date": {"$lte": target_dt}},
+            {
+                "known_as_of": {"$exists": False},
+                "announced_at": {"$lte": target_dt},
+            },
             {
                 "known_as_of": {"$exists": False},
                 "announced_at": {"$exists": False},
-                "first_posted_date": {"$exists": False},
+                "first_posted_date": {"$lte": target_dt},
             },
         ]
     }

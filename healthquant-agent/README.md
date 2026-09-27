@@ -91,6 +91,13 @@ Tests exercise Streamlit mode switching, unavailable services, explicit generati
 
 ## Quantitative validation boundaries
 
+Clinical feature queries prioritize `known_as_of` over `announced_at`, then
+`first_posted_date`. A newer knowledge timestamp cannot be bypassed by an older
+publication date; records without any provenance are excluded. If no eligible
+enrollment observations remain, feature construction raises an error rather
+than inventing a value of 5000. These guards do not establish source completeness
+or reconstruct overwritten historical revisions; audited snapshots remain required.
+
 Monthly expanding-window fits use only prior data and a training-only scaler. Daily inference uses sequence prefixes ending on each prediction date. The simulator uses close-to-close returns with a one-session signal lag, zero trading costs and zero cash yield; this is an idealized execution assumption.
 
 The validation loader requires `predicted_regime` and a `train_end_date` before each prediction date. It rejects duplicate dates and missing sessions inside the downloaded interval. Historical clinical features still need archived point-in-time source data: recorded model cutoffs alone do not establish absence of lookahead.
