@@ -4,10 +4,9 @@ scripts/validate_backtest.py
 Reproduces the walk-forward backtest results and generates the regime timeline chart.
 
 Run after seed_historical.py has populated MongoDB and the HMM has been trained.
-This script is the proof-of-concept for judges — it demonstrates that:
-  1. The walk-forward protocol is correctly implemented (no lookahead)
-  2. The regime model has predictive signal (Sharpe > 0.6, hit rate > 55%)
-  3. The regime labels align with known historical market periods
+This script evaluates stored predictions with training-cutoff provenance.
+It does not establish upstream feature provenance or guarantee predictive signal.
+All performance numbers must come from the supplied data, not specification targets.
 
 Output files:
   - backtest_report.html       — full interactive Plotly report
@@ -125,20 +124,25 @@ def print_metrics_table(metrics: dict) -> None:
     hit_rate = metrics.get("hit_rate_10d", float("nan"))
     hit_text = "n/a" if not np.isfinite(hit_rate) else f"{hit_rate:.1%}"
     print(f"{'10-day directional hit':<24} {hit_text:>18} {'—':>20}")
+    if "transaction_cost_bps" in metrics:
+        print(f"One-way trading cost: {metrics['transaction_cost_bps']:g} bps; zero cash yield; no terminal liquidation.")
     print("\nFor educational and research purposes only. Past performance does not guarantee future results.\n")
 
 
-def main(start_year: int = 2020, end_year: int = 2024) -> None:
+def main(start_year: int = 2020, end_year: int = 2024, transaction_cost_bps: float = 0.0) -> None:
     """
     Run the full backtest validation and save output files.
 
     Args:
         start_year: First year of the test period.
         end_year: Last year of the test period.
+        transaction_cost_bps: One-way trading cost assumption, not a measured fee.
     """
     from database.mongo_client import get_db
     from hmm.backtest import run_backtest, compute_metrics, plot_regime_timeline, generate_backtest_report
+    from hmm.backtest import validate_transaction_cost
 
+    validate_transaction_cost(transaction_cost_bps)
     logger.info(f"Running walk-forward backtest: {start_year}–{end_year}")
     db = get_db()
 
@@ -146,7 +150,7 @@ def main(start_year: int = 2020, end_year: int = 2024) -> None:
     predictions_df = load_predictions_from_mongo(db, start_year, end_year)
 
     logger.info("Running backtest simulation...")
-    backtest_df = run_backtest(predictions_df)
+    backtest_df = run_backtest(predictions_df, transaction_cost_bps=transaction_cost_bps)
 
     logger.info("Computing metrics...")
     metrics = compute_metrics(backtest_df)
@@ -175,5 +179,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="HealthQuant walk-forward backtest validator")
     parser.add_argument("--start", type=int, default=2020, help="First test year")
     parser.add_argument("--end", type=int, default=2024, help="Last test year")
+    parser.add_argument("--transaction-cost-bps", type=float, default=0.0,
+                        help="One-way cost per traded weight in basis points; default 0 is frictionless")
     args = parser.parse_args()
-    main(start_year=args.start, end_year=args.end)
+    main(start_year=args.start, end_year=args.end, transaction_cost_bps=args.transaction_cost_bps)

@@ -84,3 +84,34 @@ def test_rejects_missing_trading_session_predictions(monkeypatch):
     monkeypatch.setattr(validation.yf, "download", lambda *args, **kwargs: prices)
     with pytest.raises(ValueError, match="Missing predictions"):
         validation.load_predictions_from_mongo({"regime_states": Collection(documents)}, 2024, 2024)
+
+
+def test_main_forwards_cost_and_persists_assumptions(monkeypatch, tmp_path, capsys):
+    """Exercise the real simulator/report writer without any external services."""
+    import json
+    import database.mongo_client as mongo
+
+    predictions = pd.DataFrame({
+        "predicted_regime": ["risk-on"] * 12,
+        "actual_xlv_ret_1d": [0.0] * 12,
+    }, index=pd.bdate_range("2024-01-02", periods=12))
+    monkeypatch.setattr(mongo, "get_db", lambda: {})
+    monkeypatch.setattr(validation, "load_predictions_from_mongo", lambda *_: predictions)
+    monkeypatch.setattr(validation, "OUTPUT_DIR", tmp_path)
+    validation.main(2024, 2024, transaction_cost_bps=25)
+    metrics = json.loads((tmp_path / "backtest_metrics.json").read_text())
+    assert metrics["transaction_cost_bps"] == 25
+    assert metrics["total_return_strategy"] == pytest.approx(-.0025)
+    assert metrics["total_return_buyhold"] == pytest.approx(-.0025)
+    assert "25 bps" in capsys.readouterr().out
+    assert "25 bps" in (tmp_path / "backtest_report.html").read_text()
+
+
+def test_main_rejects_invalid_cost_before_connecting(monkeypatch):
+    import database.mongo_client as mongo
+
+    def unexpected_connection():
+        pytest.fail("Invalid configuration must not access MongoDB")
+    monkeypatch.setattr(mongo, "get_db", unexpected_connection)
+    with pytest.raises(ValueError, match="transaction_cost_bps"):
+        validation.main(transaction_cost_bps=-1)

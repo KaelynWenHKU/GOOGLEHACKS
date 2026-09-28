@@ -98,11 +98,15 @@ enrollment observations remain, feature construction raises an error rather
 than inventing a value of 5000. These guards do not establish source completeness
 or reconstruct overwritten historical revisions; audited snapshots remain required.
 
-Monthly expanding-window fits use only prior data and a training-only scaler. Daily inference uses sequence prefixes ending on each prediction date. The simulator uses close-to-close returns with a one-session signal lag, zero trading costs and zero cash yield; this is an idealized execution assumption.
+Monthly expanding-window fits use only prior data and a training-only scaler. Daily inference uses sequence prefixes ending on each prediction date. The simulator uses close-to-close returns with a one-session signal lag and zero cash yield; this remains an idealized execution assumption, not an executable fill model.
+
+Trading costs are configurable with `--transaction-cost-bps` (one-way basis points per traded portfolio weight). The default `0` is explicitly frictionless. Costs apply to lagged strategy rebalancing, including drift in a half-invested portfolio, and to the benchmark's initial purchase. Net returns use `(1 - turnover * bps / 10000) * (1 + weight * market_return) - 1`, assuming target allocation after cost deduction. This is a proportional cost approximation, not a broker fee or market-impact estimate. There is no terminal liquidation, tax model or separate slippage model. Reported Sharpe uses net returns and a 4% annual risk-free reference; directional hit rate still uses raw XLV returns (non-neutral signals, overlapping 10-session windows).
 
 The validation loader requires `predicted_regime` and a `train_end_date` before each prediction date. It rejects duplicate dates and missing sessions inside the downloaded interval. Historical clinical features still need archived point-in-time source data: recorded model cutoffs alone do not establish absence of lookahead.
 
 From `healthquant-agent/`, run `python -m scripts.validate_backtest --start 2020 --end 2024` after populating validated predictions. It writes timeline/report HTML and a metrics JSON file. Targets in PROJECT_SPEC.md are **not actual results**.
+
+For cost sensitivity, rerun with, for example, `--transaction-cost-bps 10`. The rate is a user-selected assumption, not a measured cost. The HTML, console and JSON disclose the chosen rate; JSON also reports total strategy turnover. Each run replaces the generated output files, so preserve them before comparing scenarios.
 
 For educational research only; not financial advice. Past performance does not guarantee future results.
 

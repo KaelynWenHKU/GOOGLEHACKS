@@ -9,11 +9,8 @@ Implements the strategy from Section 15:
   - Catalyst-fear regime: hold 0% XLV (cash or short via puts)
   Rebalanced daily based on predicted regime.
 
-Target backtest metrics (Section 15):
-  Total return 2020–2024:  to be computed (benchmark: XLV +68%)
-  Max drawdown:            target < 25%   (benchmark: ~-35%)
-  Sharpe ratio:            target > 0.8   (benchmark: ~0.6)
-  Hit rate (10d direction): target > 55%
+Performance must be computed from verified out-of-sample predictions.
+Specification targets are not measured results.
 
 IMPORTANT: All predictions must use the walk-forward protocol from train.py.
 Never predict on in-sample data. Report results with the disclaimer:
@@ -42,9 +39,16 @@ REGIME_WEIGHTS: dict[str, float] = {
 RISK_FREE_RATE_ANNUAL = 0.04
 
 
+def validate_transaction_cost(transaction_cost_bps: float) -> None:
+    """Reject undefined costs or rates that could consume all entry capital."""
+    if not np.isfinite(transaction_cost_bps) or not 0 <= transaction_cost_bps < 10_000:
+        raise ValueError("transaction_cost_bps must be finite and in [0, 10000)")
+
+
 def run_backtest(
     predictions_df: pd.DataFrame,
     initial_capital: float = 100_000.0,
+    transaction_cost_bps: float = 0.0,
 ) -> pd.DataFrame:
     """
     Simulate the regime-following portfolio strategy against a buy-and-hold baseline.
@@ -54,12 +58,17 @@ def run_backtest(
             date (DatetimeIndex), predicted_regime (str), actual_xlv_ret_1d (float).
             Each row is one trading day with an out-of-sample regime prediction.
         initial_capital: Starting portfolio value in USD.
+        transaction_cost_bps: One-way cost per traded portfolio weight (1 bp
+            is 0.01%). Zero is an explicit frictionless scenario, not an estimate.
+            Costs are deducted before returns, with post-cost target allocation.
+            No terminal liquidation, cash yield, taxes or market-impact model.
 
     Returns:
         DataFrame indexed by date with columns:
             strategy_value, buyhold_value, regime_label, daily_ret_strategy,
             daily_ret_buyhold, drawdown_strategy, drawdown_buyhold.
     """
+    validate_transaction_cost(transaction_cost_bps)
     required = {"predicted_regime", "actual_xlv_ret_1d"}
     missing = required - set(predictions_df.columns)
     if missing:
@@ -84,9 +93,25 @@ def run_backtest(
     # A regime inferred from today's close can only be acted on from the next
     # trading session. Shifting one row is the key anti-lookahead execution rule.
     executed_weight = signal_weight.shift(1).fillna(0.0)
-    strategy_returns = executed_weight * returns
+    gross_returns = executed_weight * returns
+    # Yesterday's allocation drifts with prices before today's rebalance.
+    # Proportional costs cancel in this ratio under post-cost target allocation.
+    pretrade_weight = (
+        executed_weight.shift(1) * (1 + returns.shift(1)) / (1 + gross_returns.shift(1))
+    ).fillna(0.0)
+    turnover = (executed_weight - pretrade_weight).abs()
+    cost = turnover * float(transaction_cost_bps) / 10_000
+    strategy_returns = (1 - cost) * (1 + gross_returns) - 1
+    # Preserve exact legacy arithmetic in the frictionless scenario.
+    if transaction_cost_bps == 0:
+        strategy_returns = gross_returns
+    benchmark_cost = pd.Series(0.0, index=frame.index)
+    benchmark_cost.iloc[0] = float(transaction_cost_bps) / 10_000
+    benchmark_returns = (1 - benchmark_cost) * (1 + returns) - 1
+    if transaction_cost_bps == 0:
+        benchmark_returns = returns.copy()
     strategy_value = initial_capital * (1.0 + strategy_returns).cumprod()
-    buyhold_value = initial_capital * (1.0 + returns).cumprod()
+    buyhold_value = initial_capital * (1.0 + benchmark_returns).cumprod()
 
     output = pd.DataFrame(
         {
@@ -97,6 +122,10 @@ def run_backtest(
             "executed_weight": executed_weight,
             "daily_ret_strategy": strategy_returns,
             "daily_ret_buyhold": returns,
+            "daily_ret_buyhold_net": benchmark_returns,
+            "turnover_strategy": turnover,
+            "transaction_cost_strategy": cost,
+            "transaction_cost_buyhold": benchmark_cost,
         },
         index=frame.index,
     )
@@ -108,6 +137,7 @@ def run_backtest(
         peak = equity.cummax().clip(lower=initial_capital)
         output[f"drawdown_{portfolio}"] = equity / peak - 1.0
     output.attrs["initial_capital"] = float(initial_capital)
+    output.attrs["transaction_cost_bps"] = float(transaction_cost_bps)
     return output
 
 
@@ -142,9 +172,11 @@ def compute_metrics(backtest_df: pd.DataFrame) -> dict:
         "max_drawdown_strategy": float(backtest_df["drawdown_strategy"].min()),
         "max_drawdown_buyhold": float(backtest_df["drawdown_buyhold"].min()),
         "sharpe_strategy": sharpe(backtest_df["daily_ret_strategy"]),
-        "sharpe_buyhold": sharpe(backtest_df["daily_ret_buyhold"]),
+        "sharpe_buyhold": sharpe(backtest_df["daily_ret_buyhold_net"]),
         "hit_rate_10d": compute_10d_hit_rate(backtest_df),
         "trading_days": int(len(backtest_df)),
+        "transaction_cost_bps": float(backtest_df.attrs["transaction_cost_bps"]),
+        "total_turnover_strategy": float(backtest_df["turnover_strategy"].sum()),
     }
 
 
@@ -267,6 +299,7 @@ def generate_backtest_report(
         "sharpe_strategy",
         "sharpe_buyhold",
         "hit_rate_10d",
+        "transaction_cost_bps",
     ]
     missing = [name for name in required_metrics if name not in metrics]
     if missing:
@@ -298,6 +331,12 @@ def generate_backtest_report(
         "table{border-collapse:collapse;width:100%}th,td{padding:10px;border:1px solid #ddd;text-align:right}"
         "th:first-child,td:first-child{text-align:left}.disclaimer{color:#666;font-size:14px}</style></head><body>"
         + "".join(table)
+        + f"<p>One-way trading cost: {metrics['transaction_cost_bps']:g} bps per traded portfolio weight. "
+        "Costs apply to drift-adjusted daily strategy rebalancing and the benchmark's initial entry. "
+        "No terminal liquidation; zero cash yield; no taxes or separate market-impact model. "
+        "Execution uses an idealized one-session signal lag with close-to-close returns. "
+        "Sharpe uses a 4% annual risk-free reference. Directional hit rate uses raw market returns, "
+        "excludes neutral signals, and includes overlapping 10-session windows.</p>"
         + pio.to_html(figure, full_html=False, include_plotlyjs=True)
         + "<p class='disclaimer'>For educational and research purposes only. "
         "Past performance does not guarantee future results.</p></body></html>"
