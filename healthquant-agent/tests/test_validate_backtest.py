@@ -21,6 +21,51 @@ class Collection:
         return Cursor(self.documents)
 
 
+def price_validation_db():
+    """A single verified prediction for testing market-provider integrity."""
+    return {"regime_states": Collection([
+        {"date": datetime(2024, 1, 2), "predicted_regime": "risk-on",
+         "train_end_date": "2023-12-29"}
+    ])}
+
+
+@pytest.mark.parametrize("bad_price", [0, -100, float("inf"), float("-inf"), float("nan"), "invalid"])
+def test_rejects_invalid_prices_before_return_calculation(monkeypatch, bad_price):
+    prices = pd.DataFrame({"Close": [bad_price, 101]},
+                          index=pd.to_datetime(["2024-01-01", "2024-01-02"]))
+    monkeypatch.setattr(validation.yf, "download", lambda *a, **k: prices)
+    with pytest.raises(ValueError, match="prices"):
+        validation.load_predictions_from_mongo(price_validation_db(), 2024, 2024)
+
+
+@pytest.mark.parametrize("dates", [
+    ["2024-01-01", "2024-01-01", "2024-01-02"],
+    [None, "2024-01-01", "2024-01-02"],
+])
+def test_rejects_ambiguous_price_dates(monkeypatch, dates):
+    prices = pd.DataFrame({"Close": [99, 100, 101]}, index=pd.to_datetime(dates))
+    monkeypatch.setattr(validation.yf, "download", lambda *a, **k: prices)
+    with pytest.raises(ValueError, match="price dates"):
+        validation.load_predictions_from_mongo(price_validation_db(), 2024, 2024)
+
+
+def test_unsorted_prices_are_sorted_before_return_calculation(monkeypatch):
+    prices = pd.DataFrame({"Close": [101, 100]},
+                          index=pd.to_datetime(["2024-01-02", "2024-01-01"]))
+    monkeypatch.setattr(validation.yf, "download", lambda *a, **k: prices)
+    result = validation.load_predictions_from_mongo(price_validation_db(), 2024, 2024)
+    assert result.actual_xlv_ret_1d.iloc[0] == pytest.approx(.01)
+
+
+def test_rejects_duplicate_price_dates_after_timezone_removal(monkeypatch):
+    # Two UTC instants collapse to the same wall-clock timestamp at DST fallback.
+    dates = pd.to_datetime(["2024-11-03T05:30:00Z", "2024-11-03T06:30:00Z"]).tz_convert("America/New_York")
+    prices = pd.DataFrame({"Close": [100, 101]}, index=dates)
+    monkeypatch.setattr(validation.yf, "download", lambda *a, **k: prices)
+    with pytest.raises(ValueError, match="price dates"):
+        validation.load_predictions_from_mongo(price_validation_db(), 2024, 2024)
+
+
 def test_load_predictions_aligns_prices_without_lookahead(monkeypatch) -> None:
     dates = pd.bdate_range("2024-01-02", periods=4)
     db = {

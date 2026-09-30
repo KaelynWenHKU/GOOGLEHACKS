@@ -94,6 +94,15 @@ def load_predictions_from_mongo(
     if isinstance(close, pd.DataFrame):
         close = close.iloc[:, 0]
     close.index = pd.DatetimeIndex(close.index).tz_localize(None)
+    # Validate before pct_change: a zero lead-in produces infinite returns,
+    # while negative prices can produce plausible-looking but invalid results.
+    # Row order from a provider must not determine the return chronology.
+    if close.index.hasnans or close.index.has_duplicates:
+        raise ValueError("XLV price dates must be nonmissing and unique")
+    close = pd.to_numeric(close, errors="coerce")
+    if not np.isfinite(close.to_numpy(dtype=float)).all() or (close <= 0).any():
+        raise ValueError("XLV prices must be finite positive numbers")
+    close = close.sort_index()
     predictions["xlv_price"] = close.reindex(predictions.index)
     predictions["actual_xlv_ret_1d"] = close.pct_change(fill_method=None).reindex(predictions.index)
     sessions = close.loc[predictions.index.min():predictions.index.max()].index

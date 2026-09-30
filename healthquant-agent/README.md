@@ -108,6 +108,8 @@ From `healthquant-agent/`, run `python -m scripts.validate_backtest --start 2020
 
 For cost sensitivity, rerun with, for example, `--transaction-cost-bps 10`. The rate is a user-selected assumption, not a measured cost. The HTML, console and JSON disclose the chosen rate; JSON also reports total strategy turnover. Each run replaces the generated output files, so preserve them before comparing scenarios.
 
+The validation loader rejects nonfinite, nonnumeric, zero or negative XLV closes, and missing or duplicate price timestamps, before computing returns. Valid prices are sorted chronologically. Missing prediction sessions or missing preceding closes remain errors rather than silently discarded observations.
+
 For educational research only; not financial advice. Past performance does not guarantee future results.
 
 MIT license — see LICENSE.
