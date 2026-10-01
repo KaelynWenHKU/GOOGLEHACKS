@@ -25,8 +25,10 @@ logger = logging.getLogger(__name__)
 def _validated_state_map(mapping: dict[int, str] | None) -> dict[int, str]:
     """Require a one-to-one mapping so malformed labels cannot overwrite states."""
     if mapping is None:
-        return {0: "risk-on", 1: "neutral", 2: "catalyst-fear"}
-    if (set(mapping) != {0, 1, 2}
+        raise ValueError("state_label_map is required from the fitted checkpoint; HMM state IDs have no fixed meaning")
+    if (any(isinstance(key, (bool, np.bool_)) or not isinstance(key, (int, np.integer))
+            for key in mapping)
+            or set(mapping) != {0, 1, 2}
             or set(mapping.values()) != {"risk-on", "neutral", "catalyst-fear"}):
         raise ValueError("state_label_map must map states 0, 1, 2 to distinct canonical labels")
     return dict(mapping)
@@ -115,6 +117,9 @@ def predict_proba_from_sequence(
         feature_sequence: Array of shape (T, 8) — standardised feature history.
                           Must be long enough for reliable state inference
                           (minimum ~20 trading days recommended).
+        state_label_map: Required mapping from the same fitted checkpoint as
+                         model. Missing mappings raise ValueError; raw state IDs
+                         cannot safely be assigned default market meanings.
 
     Returns:
         Tuple of (most_likely_state_id, regime_label, state_probs_list).
@@ -151,6 +156,8 @@ def compute_forward_transition_probs(
         model: Fitted GaussianHMM (provides transmat_).
         current_state_probs: Array of shape (3,) — today's state distribution.
         n_days: Forward horizon in trading days (default 10).
+        state_label_map: Required semantic map from the same fitted checkpoint.
+                         State ordering may change after every retraining.
 
     Returns:
         Dict with keys "to_risk_on", "to_neutral", "to_catalyst_fear",

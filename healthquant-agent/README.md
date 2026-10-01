@@ -110,6 +110,8 @@ For cost sensitivity, rerun with, for example, `--transaction-cost-bps 10`. The 
 
 The validation loader rejects nonfinite, nonnumeric, zero or negative XLV closes, and missing or duplicate price timestamps, before computing returns. Valid prices are sorted chronologically. Missing prediction sessions or missing preceding closes remain errors rather than silently discarded observations.
 
+Prediction and transition helpers require the explicit `state_label_map` from the same fitted checkpoint as the model. They never assume state 0 is risk-on or state 2 is fear: HMM state IDs can permute after retraining. Missing or malformed maps raise an error instead of returning potentially mislabeled probabilities.
+
 For educational research only; not financial advice. Past performance does not guarantee future results.
 
 MIT license — see LICENSE.
