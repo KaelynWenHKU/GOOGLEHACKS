@@ -1,6 +1,7 @@
 """Tests for robust HMM fitting, labeling, persistence, and walk-forward use."""
 
 from types import SimpleNamespace
+import pickle
 
 import numpy as np
 import pandas as pd
@@ -138,3 +139,36 @@ def test_walk_forward_rejects_invalid_closes_before_fitting(monkeypatch, bad_pri
 def test_walk_forward_rejects_empty_years():
     with pytest.raises(ValueError, match="must not be empty"):
         run_walk_forward_training({}, test_years=[])
+
+
+@pytest.mark.parametrize("defect", ["missing_schema", "wrong_order", "missing_cutoff", "invalid_cutoff", "not_dict"])
+def test_checkpoint_requires_explicit_valid_metadata(tmp_path, monkeypatch, defect):
+    monkeypatch.setattr(train_module, "MODEL_DIR", tmp_path)
+    payload = {"model": None, "scaler": None,
+               "state_label_map": {0: "risk-on", 1: "neutral", 2: "catalyst-fear"},
+               "feature_names": FEATURE_NAMES.copy(), "train_end_date": "2024-01-31"}
+    if defect == "missing_schema":
+        del payload["feature_names"]
+    elif defect == "wrong_order":
+        payload["feature_names"] = FEATURE_NAMES[::-1]
+    elif defect == "missing_cutoff":
+        del payload["train_end_date"]
+    elif defect == "invalid_cutoff":
+        payload["train_end_date"] = "NaT"
+    else:
+        payload = []
+    with (tmp_path / "hmm_latest.pkl").open("wb") as handle:
+        pickle.dump(payload, handle)
+    with pytest.raises(ValueError):
+        load_model()
+
+
+@pytest.mark.parametrize("bad_date", [None, "NaT", "2024-02-30", "2024-01-31T12:00:00", "2024-1-1", "../outside"])
+def test_checkpoint_dates_are_canonical_before_file_access(tmp_path, monkeypatch, bad_date):
+    monkeypatch.setattr(train_module, "MODEL_DIR", tmp_path)
+    labels = {0: "risk-on", 1: "neutral", 2: "catalyst-fear"}
+    with pytest.raises(ValueError, match="date"):
+        save_model(None, None, labels, bad_date)
+    with pytest.raises(ValueError, match="date"):
+        load_model(bad_date)
+    assert list(tmp_path.iterdir()) == []

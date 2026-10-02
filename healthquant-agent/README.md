@@ -112,6 +112,8 @@ The validation loader rejects nonfinite, nonnumeric, zero or negative XLV closes
 
 Prediction and transition helpers require the explicit `state_label_map` from the same fitted checkpoint as the model. They never assume state 0 is risk-on or state 2 is fear: HMM state IDs can permute after retraining. Missing or malformed maps raise an error instead of returning potentially mislabeled probabilities.
 
+Checkpoints must explicitly record the current ordered `feature_names` and a valid `train_end_date` in `YYYY-MM-DD` format. Older files missing this metadata are rejected; regenerate them from verified training inputs rather than guessing their feature order or cutoff. Only load trusted local pickle files: these metadata checks occur after deserialization and do not make untrusted pickle files safe.
+
 For educational research only; not financial advice. Past performance does not guarantee future results.
 
 MIT license — see LICENSE.

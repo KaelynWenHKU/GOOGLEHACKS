@@ -26,6 +26,7 @@ import pickle
 import os
 import tempfile
 from pathlib import Path
+from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -178,6 +179,16 @@ def infer_state_labels(model: GaussianHMM) -> dict[int, str]:
     return mapping
 
 
+def _checkpoint_date(value: str) -> str:
+    """Require a real canonical date; never interpret a selector as a path."""
+    try:
+        if not isinstance(value, str) or date.fromisoformat(value).isoformat() != value:
+            raise ValueError
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Checkpoint date must be a valid YYYY-MM-DD string") from exc
+    return value
+
+
 def save_model(
     model: GaussianHMM,
     scaler: StandardScaler,
@@ -197,10 +208,7 @@ def save_model(
     Returns:
         Path to the saved .pkl file.
     """
-    try:
-        parsed_date = pd.Timestamp(train_end_date).strftime("%Y-%m-%d")
-    except (TypeError, ValueError) as exc:
-        raise ValueError("train_end_date must be a valid date") from exc
+    parsed_date = _checkpoint_date(train_end_date)
     if set(state_label_map.values()) != {"risk-on", "neutral", "catalyst-fear"}:
         raise ValueError("state_label_map must contain each canonical regime exactly once")
 
@@ -222,7 +230,10 @@ def save_model(
 
 def load_model(checkpoint: str = "latest") -> tuple[GaussianHMM, StandardScaler, dict[int, str]]:
     """
-    Load a serialised HMM checkpoint from disk.
+    Load a serialised HMM checkpoint from trusted local disk only.
+
+    Pickle can execute code while loading. Metadata validation does not make
+    untrusted or downloaded pickle files safe to open.
 
     Args:
         checkpoint: "latest" to load the most recent model, or an ISO date
@@ -234,18 +245,21 @@ def load_model(checkpoint: str = "latest") -> tuple[GaussianHMM, StandardScaler,
     Raises:
         FileNotFoundError: If no matching checkpoint file is found.
     """
-    filename = "hmm_latest.pkl" if checkpoint == "latest" else f"hmm_{checkpoint}.pkl"
+    filename = "hmm_latest.pkl" if checkpoint == "latest" else f"hmm_{_checkpoint_date(checkpoint)}.pkl"
     path = MODEL_DIR / filename
     if not path.exists():
         raise FileNotFoundError(f"HMM checkpoint not found: {path}")
     with path.open("rb") as handle:
         payload = pickle.load(handle)
-    required = {"model", "scaler", "state_label_map"}
+    if not isinstance(payload, dict):
+        raise ValueError("Checkpoint payload must be a dictionary")
+    required = {"model", "scaler", "state_label_map", "feature_names", "train_end_date"}
     missing = required - payload.keys()
     if missing:
         raise ValueError(f"Invalid checkpoint {path}: missing {sorted(missing)}")
-    if payload.get("feature_names", FEATURE_NAMES) != FEATURE_NAMES:
+    if payload["feature_names"] != FEATURE_NAMES:
         raise ValueError("Checkpoint feature schema differs from current FEATURE_NAMES")
+    _checkpoint_date(payload["train_end_date"])
     return payload["model"], payload["scaler"], payload["state_label_map"]
 
 
