@@ -114,6 +114,20 @@ Prediction and transition helpers require the explicit `state_label_map` from th
 
 Checkpoints must explicitly record the current ordered `feature_names` and a valid `train_end_date` in `YYYY-MM-DD` format. Older files missing this metadata are rejected; regenerate them from verified training inputs rather than guessing their feature order or cutoff. Only load trusted local pickle files: these metadata checks occur after deserialization and do not make untrusted pickle files safe.
 
+### Prepare stored predictions for historical analogue search
+
+After auditing historical point-in-time features and persisting monthly walk-forward predictions, run from `healthquant-agent/`:
+
+```bash
+python -m scripts.embed_historical_regimes --start 2020-01-01 --end 2024-12-31 --max-documents 25
+```
+
+This reads at most 25 rows missing `feature_embedding` and validates them without calling Voyage or writing MongoDB. Add `--write` to explicitly allow Voyage document embeddings (charges may apply) and guarded updates; the maximum batch size is 100. It checks training cutoff precedes prediction date, feature order/values, labels and probability distributions, but these checks do not establish upstream point-in-time data quality.
+
+Only date, predicted label and raw features enter embedding text—not realized returns or later summaries. Existing embeddings are skipped; source changes during a run are reported as conflicts. Provider/model metadata and creation time are stored with each vector. Partial writes can be resumed by rerunning; conflicts may still consume embedding tokens. This is not a migration tool for existing embeddings or model changes. The query and document embedding models must agree.
+
+The full historical ingestion pipeline remains incomplete. This command cannot create missing predictions or resolve Atlas network access. No live embeddings were generated to validate this implementation; tests use offline fixtures.
+
 For educational research only; not financial advice. Past performance does not guarantee future results.
 
 MIT license — see LICENSE.
