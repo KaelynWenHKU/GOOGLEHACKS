@@ -128,6 +128,8 @@ Only date, predicted label and raw features enter embedding text—not realized 
 
 The full historical ingestion pipeline remains incomplete. This command cannot create missing predictions or resolve Atlas network access. No live embeddings were generated to validate this implementation; tests use offline fixtures.
 
+Persisting a walk-forward rerun synchronizes the stored regime aliases and atomically removes previous generated embeddings and summaries. It also clears unavailable evaluation returns and their observation timestamps, including the legacy forward-return alias. Unrelated annotations remain untouched. Reruns therefore require an explicit re-embedding pass before those dates become searchable again—even when their predictions are unchanged; re-embedding may incur provider charges.
+
 For educational research only; not financial advice. Past performance does not guarantee future results.
 
 MIT license — see LICENSE.

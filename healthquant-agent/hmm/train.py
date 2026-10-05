@@ -373,7 +373,7 @@ def run_walk_forward_training(
                 if persist_predictions:
                     db["regime_states"].update_one(
                         {"date": date.to_pydatetime()},
-                        {"$set": record},
+                        _prediction_update(record),
                         upsert=True,
                     )
 
@@ -388,6 +388,36 @@ def run_walk_forward_training(
             }
         )
     return results
+
+
+def _prediction_update(record: dict) -> dict:
+    """Atomically replace prediction-derived evidence without stale caches.
+
+    Every persisted rerun invalidates generated text/embeddings, even if the
+    values happen to be identical. The bounded embedding command can regenerate
+    them explicitly. Unrelated human annotations are not removed.
+    """
+    values = dict(record)
+    values["regime_label"] = record["predicted_regime"]
+    values["regime_id"] = record["predicted_state"]
+    unset = {name: "" for name in (
+        "feature_embedding", "embedding_model", "embedding_created_at",
+        "brief_summary", "xlv_ret_10d_actual",
+    )}
+    for field in ("actual_xlv_ret_1d", "actual_xlv_return_10d"):
+        value = values.get(field)
+        if value is None or not np.isfinite(value):
+            values.pop(field, None)
+            unset[field] = ""
+    observed = pd.Timestamp(values.get("return_observed_at"))
+    # An evaluation result is usable only with an explicit later availability
+    # timestamp. Missing outcomes must not inherit an old run's timestamp.
+    if ("actual_xlv_return_10d" not in values or pd.isna(observed)
+            or observed <= pd.Timestamp(record["date"])):
+        for field in ("actual_xlv_return_10d", "return_observed_at"):
+            values.pop(field, None)
+            unset[field] = ""
+    return {"$set": values, "$unset": unset}
 
 
 def _validate_daily_index(index: pd.DatetimeIndex, name: str) -> None:

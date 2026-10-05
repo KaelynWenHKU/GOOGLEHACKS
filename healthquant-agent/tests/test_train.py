@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 import pickle
+from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
@@ -172,3 +173,70 @@ def test_checkpoint_dates_are_canonical_before_file_access(tmp_path, monkeypatch
     with pytest.raises(ValueError, match="date"):
         load_model(bad_date)
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("forward,observed,keep", [
+    (.1, pd.Timestamp("2024-01-16"), True),
+    (np.nan, pd.Timestamp("2024-01-16"), False),
+    (.1, None, False), (np.inf, None, False),
+    (.1, pd.NaT, False), (.1, pd.Timestamp("2024-01-02"), False),
+])
+def test_prediction_update_clears_stale_derived_fields(forward, observed, keep):
+    record = {"date": pd.Timestamp("2024-01-02"), "predicted_state": 2,
+              "predicted_regime": "risk-on", "actual_xlv_return_10d": forward,
+              "actual_xlv_ret_1d": np.nan}
+    if observed is not None:
+        record["return_observed_at"] = observed
+    update = train_module._prediction_update(record)
+    assert update["$set"]["regime_label"] == "risk-on"
+    assert update["$set"]["regime_id"] == 2
+    assert "feature_embedding" in update["$unset"]
+    assert "embedding_model" in update["$unset"]
+    assert "embedding_created_at" in update["$unset"]
+    assert "brief_summary" in update["$unset"]
+    assert "xlv_ret_10d_actual" in update["$unset"]
+    assert "actual_xlv_ret_1d" in update["$unset"]
+    assert ("actual_xlv_return_10d" in update["$set"]) is keep
+    assert ("return_observed_at" in update["$set"]) is keep
+    assert not set(update["$set"]) & set(update["$unset"])
+    assert "regime_label" not in record  # caller's DataFrame record is untouched
+
+
+def test_persisted_walk_forward_refresh_is_atomic(monkeypatch, tmp_path):
+    monkeypatch.setattr(train_module, "MODEL_DIR", tmp_path)
+    model = SimpleNamespace(transmat_=np.eye(3),
+        predict_proba=lambda seq: np.tile([.1, .2, .7], (len(seq), 1)))
+    monkeypatch.setattr(train_module, "train_hmm", lambda *a, **k: model)
+    monkeypatch.setattr(train_module, "infer_state_labels",
+                        lambda _: {0: "neutral", 1: "catalyst-fear", 2: "risk-on"})
+    monkeypatch.setattr(train_module, "save_model", lambda *a: tmp_path / "unused.pkl")
+    dates = pd.bdate_range("2023-11-01", "2024-01-02")
+    frame = pd.DataFrame(synthetic_features(len(dates)), index=dates, columns=FEATURE_NAMES)
+    collection = MagicMock()
+    run_walk_forward_training({"regime_states": collection}, "2023-11-01", [2024],
+                              feature_frame=frame, persist_predictions=True)
+    assert collection.update_one.call_count == 2
+    for call in collection.update_one.call_args_list:
+        query, update = call.args
+        assert query["date"] == update["$set"]["date"]
+        assert update["$set"]["regime_label"] == "risk-on"
+        assert {"feature_embedding", "actual_xlv_return_10d", "return_observed_at"} <= set(update["$unset"])
+        assert call.kwargs == {"upsert": True}
+        # Apply the operators to an old row: unrelated annotation survives,
+        # while the obsolete label, vector and observed outcome do not.
+        old = {"regime_label": "catalyst-fear", "feature_embedding": [1.0],
+               "return_observed_at": pd.Timestamp("2024-02-01"),
+               "actual_xlv_return_10d": .5, "reviewer_note": "keep"}
+        old.update(update["$set"])
+        for field in update["$unset"]:
+            old.pop(field, None)
+        assert old["reviewer_note"] == "keep" and old["regime_label"] == "risk-on"
+        assert "feature_embedding" not in old and "actual_xlv_return_10d" not in old
+
+
+def test_prediction_update_retains_finite_daily_return():
+    update = train_module._prediction_update({
+        "date": pd.Timestamp("2024-01-02"), "predicted_state": 1,
+        "predicted_regime": "neutral", "actual_xlv_ret_1d": -.01})
+    assert update["$set"]["actual_xlv_ret_1d"] == -.01
+    assert "actual_xlv_ret_1d" not in update["$unset"]
