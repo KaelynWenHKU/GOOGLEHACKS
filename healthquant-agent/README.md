@@ -1,5 +1,25 @@
 # HealthQuant Agent
 
+## Interactive terminal (also works in VS Code's terminal)
+
+From the repository root, with the existing `.venv` and requirements installed:
+
+```bash
+./healthquant chat --sample    # fictional offline demo, no API calls
+./healthquant chat             # live research; prompts before API calls
+./healthquant status           # local configuration only; not a connectivity test
+./healthquant ask "Which catalysts should I watch?"
+```
+
+Alternatively, from `healthquant-agent/`, use `../.venv/bin/python -m agent.cli chat`.
+Use `/help`, `/refresh`, `/regime`, `/catalysts`, `/analogues`, `/status`, `/clear`, `/export "new-file.md"`, and `/quit`. `/backtest` shows the existing validation command without running it. Markdown export refuses existing files and symlinks. The repository launcher runs inside `healthquant-agent/`, so relative export paths are relative to that directory; use an absolute path if needed.
+
+Natural-language questions invoke the existing bounded Gemini/ADK research workflow. Each question starts an independent model session (v1 has **no multi-turn conversation memory**). Evidence stays in memory until `/refresh`, `/clear` or exit, and every brief displays its evidence timestamp. Actual tool-call names are shown after successful generation, not simulated as live progress. Sample answers are static fictional demonstrations, not generated answers to your question.
+
+Live refresh can call Voyage; live questions can call Gemini (up to six model calls per question). Both require confirmation, or explicit `--yes` for this invocation. Provider charges may apply. No API calls occur merely on startup or `/status`; no shell execution, trades, model training, automatic IP changes or database writes are exposed. Do not paste credentials into questions. This is a research terminal, not a general-purpose coding agent.
+
+The terminal reuses the dashboard's services and does not fix network access: Atlas still needs the Python process's outbound IP allowed. A changing VPN can break access again; a fixed outbound server or dedicated VPN exit is the durable deployment option. Missing HMM history remains unavailable, never replaced with sample data in live mode.
+
 A healthcare research dashboard with a three-state Gaussian HMM, a MongoDB evidence layer, and a Gemini agent built with Google ADK.
 
 ## Run the dashboard
