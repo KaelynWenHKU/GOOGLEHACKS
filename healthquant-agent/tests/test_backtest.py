@@ -36,6 +36,26 @@ def test_backtest_lags_signal_one_session_and_compounds() -> None:
     assert result["drawdown_strategy"].le(0).all()
 
 
+@pytest.mark.parametrize("index", [
+    pd.RangeIndex(3), pd.Index([1.0, 2.0, 3.0]),
+    pd.DatetimeIndex(["2024-01-02", None, "2024-01-04"]),
+])
+def test_backtest_rejects_missing_or_numeric_dates(index) -> None:
+    """Row counters and NaT must not silently become dated performance evidence."""
+    predictions = sample_predictions(3)
+    predictions.index = index
+    with pytest.raises(ValueError, match="dates"):
+        run_backtest(predictions)
+
+
+def test_backtest_accepts_and_sorts_iso_date_strings() -> None:
+    """Keep supported serialized date inputs aligned with their observations."""
+    predictions = sample_predictions(3).iloc[::-1]
+    predictions.index = predictions.index.strftime("%Y-%m-%d")
+    result = run_backtest(predictions)
+    pd.testing.assert_frame_equal(result, run_backtest(sample_predictions(3)), check_freq=False)
+
+
 def test_metrics_are_finite_and_hit_rate_uses_future_ten_days() -> None:
     result = run_backtest(sample_predictions())
     metrics = compute_metrics(result)

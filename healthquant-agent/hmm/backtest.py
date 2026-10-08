@@ -18,6 +18,7 @@ Never predict on in-sample data. Report results with the disclaimer:
 """
 
 import logging
+from numbers import Number
 from pathlib import Path
 
 import numpy as np
@@ -76,7 +77,16 @@ def run_backtest(
     if not np.isfinite(initial_capital) or initial_capital <= 0:
         raise ValueError("initial_capital must be finite and positive")
     frame = predictions_df.copy()
-    frame.index = pd.DatetimeIndex(frame.index).tz_localize(None)
+    # Pandas otherwise interprets row numbers as nanoseconds after the epoch,
+    # silently turning an undated input into seemingly dated backtest evidence.
+    if any(isinstance(value, (Number, np.bool_)) for value in frame.index):
+        raise ValueError("predictions_df dates cannot be numeric row indices")
+    try:
+        frame.index = pd.DatetimeIndex(frame.index).tz_localize(None)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("predictions_df dates must be valid timestamps") from exc
+    if frame.index.hasnans:
+        raise ValueError("predictions_df dates cannot contain missing timestamps")
     frame = frame.sort_index()
     if frame.empty or frame.index.has_duplicates:
         raise ValueError("predictions_df must be non-empty with unique dates")
